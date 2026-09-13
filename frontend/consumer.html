@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f2f2f7" />
+    <title>BeautyCare 在线客服</title>
+    <script src="/static/lucide.min.js"></script>
+    <link rel="stylesheet" href="/static/consumer.css?v=20260909-2" />
+  </head>
+  <body>
+    <a class="skip-link" href="#consumerMessages">跳到聊天内容</a>
+
+    <main class="phone-stage" id="consumerMain">
+      <section class="phone-shell" aria-label="BeautyCare 手机客服演示">
+        <div class="phone-screen">
+          <div class="dynamic-island" aria-hidden="true"></div>
+
+          <div class="status-bar" aria-hidden="true">
+            <span id="phoneClock">9:41</span>
+            <div><i data-lucide="signal"></i><i data-lucide="wifi"></i><i data-lucide="battery-full"></i></div>
+          </div>
+
+          <header class="mobile-header">
+            <button class="header-button" id="consumerBack" type="button" aria-label="返回" title="返回">
+              <i data-lucide="chevron-left"></i>
+            </button>
+            <div class="agent-avatar" aria-hidden="true">林</div>
+            <div class="agent-copy">
+              <strong><span translate="no">BeautyCare</span> 客服</strong>
+              <span><span class="online-dot" aria-hidden="true"></span>林小稚 · <span id="syncState">正在连接…</span></span>
+            </div>
+            <button class="header-button" id="chatInfo" type="button" aria-label="查看会话信息" title="会话信息">
+              <i data-lucide="ellipsis"></i>
+            </button>
+          </header>
+
+          <section class="service-context" aria-label="本次服务信息">
+            <div class="context-heading">
+              <div><span>本次服务</span><strong id="caseTitle">售后咨询</strong></div>
+              <small id="customerName">正在读取服务记录…</small>
+            </div>
+            <div class="order-context" id="consumerOrder">
+              <div class="loading-state">正在读取订单…</div>
+            </div>
+          </section>
+
+          <div class="message-feed" id="consumerMessages" tabindex="0" aria-live="polite">
+            <div class="loading-state">正在加载消息…</div>
+          </div>
+
+          <form class="consumer-composer" id="consumerComposer">
+            <div class="delivery-state" id="deliveryState" role="status" aria-live="polite">客服通常会很快回复</div>
+            <div class="attachment-preview" id="attachmentPreview" hidden>
+              <img id="attachmentThumbnail" alt="准备发送的图片预览" />
+              <div><strong>准备发送图片</strong><span id="attachmentName"></span></div>
+              <button id="removeAttachment" type="button" aria-label="移除图片" title="移除图片"><i data-lucide="x"></i></button>
+            </div>
+            <div class="composer-row">
+              <button class="composer-icon" id="consumerFile" type="button" aria-label="添加内容" title="添加内容">
+                <i data-lucide="plus"></i>
+              </button>
+              <button class="composer-icon" id="consumerImage" type="button" aria-label="添加图片" title="添加图片">
+                <i data-lucide="image"></i>
+              </button>
+              <input class="sr-only" id="consumerImageInput" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" />
+              <label class="sr-only" for="consumerInput">发送给客服的消息</label>
+              <textarea id="consumerInput" name="message" rows="1" maxlength="2000" autocomplete="off" placeholder="请输入消息…"></textarea>
+              <button class="send-button" id="consumerSend" type="submit" aria-label="发送">
+                <i data-lucide="arrow-up"></i><span class="sr-only">发送</span>
+              </button>
+            </div>
+          </form>
+
+          <div class="home-indicator" aria-hidden="true"><span></span></div>
+        </div>
+      </section>
+    </main>
+
+    <div class="consumer-toast" id="consumerToast" role="status" aria-live="polite" aria-atomic="true">
+      <i data-lucide="circle-check"></i><span id="consumerToastText">已完成</span>
+    </div>
+    <script src="/static/consumer.js?v=20260909-2"></script>
+  </body>
+</html>

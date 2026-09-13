@@ -1,0 +1,1301 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#ffffff" />
+    <title>共情双舱 智能客服工作台</title>
+    <script src="/static/lucide.min.js"></script>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+        color: #172033;
+        background: #eef1f6;
+        letter-spacing: 0;
+        --blue: #2f72ee;
+        --blue-dark: #1f5ed1;
+        --blue-soft: #edf4ff;
+        --ink: #172033;
+        --muted: #7c8799;
+        --line: #e5e9f0;
+        --surface: #fff;
+        --canvas: #f4f6f9;
+        --orange: #f08a36;
+        --red: #e95464;
+        --green: #28a879;
+        --radius: 6px;
+      }
+
+      * { box-sizing: border-box; }
+      html, body { margin: 0; min-width: 1180px; min-height: 720px; height: 100%; overflow: hidden; }
+      button, input, textarea { font: inherit; letter-spacing: 0; }
+      button { color: inherit; }
+      button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, a:focus-visible {
+        outline: 2px solid var(--blue);
+        outline-offset: 2px;
+      }
+
+      .app {
+        height: 100vh;
+        display: grid;
+        grid-template-columns: 58px 286px minmax(500px, 1fr) 384px;
+        grid-template-rows: 52px minmax(0, 1fr);
+        background: var(--surface);
+      }
+
+      .global-rail {
+        grid-row: 1 / span 2;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 10px 6px 8px;
+        background: linear-gradient(180deg, #397df2 0%, #2968df 100%);
+        color: white;
+      }
+
+      .brand-mark {
+        width: 36px;
+        height: 36px;
+        display: grid;
+        place-items: center;
+        margin-bottom: 18px;
+        border: 1px solid rgba(255,255,255,.34);
+        border-radius: 50%;
+        background: rgba(255,255,255,.13);
+        font-family: Georgia, serif;
+        font-size: 16px;
+      }
+
+      .rail-nav { width: 100%; display: grid; gap: 5px; }
+      .rail-item {
+        position: relative;
+        min-height: 50px;
+        display: grid;
+        place-items: center;
+        gap: 2px;
+        padding: 5px 0;
+        border: 0;
+        border-radius: 4px;
+        background: transparent;
+        color: rgba(255,255,255,.75);
+        cursor: pointer;
+        font-size: 9px;
+      }
+      .rail-item i { width: 17px; height: 17px; }
+      .rail-item.active { background: rgba(255,255,255,.18); color: white; }
+      .rail-item .badge {
+        position: absolute;
+        top: 3px;
+        right: 5px;
+        min-width: 15px;
+        height: 15px;
+        display: grid;
+        place-items: center;
+        padding: 0 3px;
+        border: 2px solid #3678ed;
+        border-radius: 8px;
+        background: #ef4d62;
+        color: white;
+        font-size: 7px;
+      }
+      .rail-spacer { flex: 1; }
+      .agent-orb {
+        width: 34px;
+        height: 34px;
+        display: grid;
+        place-items: center;
+        border: 1px solid rgba(255,255,255,.36);
+        border-radius: 50%;
+        background: white;
+        color: var(--blue);
+      }
+      .agent-orb i { width: 18px; height: 18px; }
+
+      .topbar {
+        grid-column: 2 / span 3;
+        display: grid;
+        grid-template-columns: 286px minmax(0, 1fr) 384px;
+        border-bottom: 1px solid var(--line);
+        background: var(--surface);
+      }
+
+      .account-block, .channel-nav, .top-tools { display: flex; align-items: center; }
+      .account-block { gap: 10px; padding: 0 15px; border-right: 1px solid var(--line); }
+      .avatar {
+        width: 30px; height: 30px; display: grid; place-items: center;
+        border-radius: 50%; background: #f5c179; color: #6b3b0f; font-weight: 750; font-size: 11px;
+      }
+      .account-copy { min-width: 0; }
+      .account-copy strong { display: block; max-width: 150px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; }
+      .account-copy span { display: block; margin-top: 2px; color: var(--red); font-size: 9px; }
+      .channel-nav { min-width: 0; padding: 0 12px; gap: 22px; overflow: hidden; }
+      .channel {
+        height: 52px; display: flex; align-items: center; gap: 6px; flex: 0 0 auto;
+        border: 0; border-bottom: 2px solid transparent; background: transparent; color: #7c8697; cursor: pointer; font-size: 10px;
+      }
+      .channel.active { color: var(--blue); border-bottom-color: var(--blue); font-weight: 700; }
+      .channel i { width: 14px; height: 14px; }
+      .top-tools { justify-content: flex-end; gap: 13px; padding: 0 16px; border-left: 1px solid var(--line); color: #627086; }
+      .top-tool { width: 26px; height: 30px; display: grid; place-items: center; padding: 0; border: 0; background: transparent; cursor: pointer; }
+      .top-tool i { width: 15px; height: 15px; }
+      .agent-state { display: flex; align-items: center; gap: 7px; margin-right: auto; color: var(--green); font-size: 9px; font-weight: 700; }
+      .agent-state::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 4px rgba(40,168,121,.11); }
+
+      .inbox {
+        grid-column: 2;
+        min-height: 0;
+        display: grid;
+        grid-template-rows: auto auto minmax(0, 1fr);
+        border-right: 1px solid var(--line);
+        background: #fafbfc;
+      }
+      .inbox-search { padding: 12px 12px 8px; }
+      .search-field { position: relative; }
+      .search-field i { position: absolute; left: 10px; top: 9px; width: 14px; height: 14px; color: #97a0af; }
+      .search-field input {
+        width: 100%; height: 32px; padding: 0 10px 0 31px; border: 1px solid var(--line); border-radius: 4px; background: white; color: var(--ink); font-size: 10px;
+      }
+      .inbox-tabs { display: grid; grid-template-columns: repeat(4, 1fr); padding: 0 12px; border-bottom: 1px solid var(--line); }
+      .inbox-tab {
+        height: 36px; position: relative; display: grid; place-items: center; padding: 0; border: 0; background: transparent; color: #8b95a5; cursor: pointer;
+      }
+      .inbox-tab i { width: 15px; height: 15px; }
+      .inbox-tab.active { color: var(--blue); }
+      .inbox-tab.active::after { content: ""; position: absolute; left: 13px; right: 13px; bottom: -1px; height: 2px; background: var(--blue); }
+      .conversation-wrap { min-height: 0; overflow-y: auto; }
+      .conversation-summary {
+        display: flex; align-items: center; justify-content: space-between; padding: 10px 13px 8px; color: #6f7a8c; font-size: 9px;
+      }
+      .conversation-summary strong { color: #445064; }
+      .conversation-item {
+        width: 100%; min-height: 70px; display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; gap: 9px;
+        padding: 11px 12px; border: 0; border-bottom: 1px solid #edf0f4; background: transparent; cursor: pointer; text-align: left;
+      }
+      .conversation-item:hover { background: #f2f6fc; }
+      .conversation-item.active { background: #eaf2ff; box-shadow: inset 3px 0 0 var(--blue); }
+      .customer-avatar {
+        width: 34px; height: 34px; display: grid; place-items: center; border-radius: 50%; background: var(--avatar); color: white; font-size: 11px; font-weight: 750;
+      }
+      .conversation-copy { min-width: 0; }
+      .conversation-name { display: flex; align-items: center; gap: 5px; margin-bottom: 5px; font-size: 11px; font-weight: 700; }
+      .conversation-name span { padding: 1px 4px; border-radius: 2px; background: #eef0f4; color: #758095; font-size: 7px; font-weight: 600; }
+      .conversation-preview { display: block; overflow: hidden; color: #7a8494; font-size: 9px; white-space: nowrap; text-overflow: ellipsis; }
+      .conversation-meta { min-width: 31px; text-align: right; color: #98a1af; font-size: 8px; }
+      .unread { width: 16px; height: 16px; display: grid; place-items: center; margin: 8px 0 0 auto; border-radius: 8px; background: var(--red); color: white; font-size: 7px; }
+
+      .chat {
+        grid-column: 3;
+        min-width: 0;
+        min-height: 0;
+        display: grid;
+        grid-template-rows: 48px minmax(0, 1fr) 142px;
+        background: var(--canvas);
+      }
+      .chat-head {
+        display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 0 17px; border-bottom: 1px solid var(--line); background: white;
+      }
+      .chat-person { display: flex; align-items: center; gap: 9px; min-width: 0; }
+      .chat-person strong { display: block; font-size: 11px; }
+      .chat-person span { display: block; margin-top: 2px; color: var(--green); font-size: 8px; }
+      .chat-actions { display: flex; align-items: center; gap: 5px; }
+      .chat-action { width: 30px; height: 30px; display: grid; place-items: center; padding: 0; border: 0; background: transparent; color: #718096; cursor: pointer; }
+      .chat-action i { width: 15px; height: 15px; }
+      .chat-feed { min-height: 0; padding: 18px 20px 28px; overflow-y: auto; }
+      .system-time { margin: 0 auto 15px; text-align: center; color: #a0a8b5; font-size: 8px; }
+      .order-card {
+        width: min(420px, 82%); margin: 0 0 18px; padding: 12px; border: 1px solid #e1e5ec; border-radius: var(--radius); background: white; box-shadow: 0 3px 10px rgba(35,52,78,.05);
+      }
+      .order-label { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; color: #657187; font-size: 8px; }
+      .order-label strong { color: var(--orange); }
+      .product-row { display: grid; grid-template-columns: 46px minmax(0,1fr) auto; gap: 10px; align-items: center; }
+      .product-thumb { width: 46px; height: 46px; display: grid; place-items: center; border-radius: 4px; background: linear-gradient(145deg,#f4e7dc,#d8bfa9); color: #774f3d; font-family: Georgia,serif; font-size: 17px; }
+      .product-copy { min-width: 0; }
+      .product-copy strong { display: block; overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+      .product-copy span { display: block; margin-top: 5px; color: #929baa; font-size: 8px; }
+      .price { font-size: 11px; font-weight: 750; }
+      .bubble-row { display: flex; align-items: flex-start; gap: 8px; margin: 14px 0; }
+      .bubble-row.agent { justify-content: flex-end; }
+      .bubble-avatar { width: 28px; height: 28px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 50%; background: #e4e8ef; color: #526078; font-size: 9px; font-weight: 700; }
+      .bubble {
+        max-width: min(520px, 72%); padding: 9px 11px; border-radius: 4px; background: white; box-shadow: 0 1px 4px rgba(36,48,68,.08); color: #313b4b; font-size: 10px; line-height: 1.65;
+      }
+      .agent .bubble { background: #dfeaff; box-shadow: none; }
+      .bubble-time { margin-top: 4px; color: #a2a9b5; font-size: 7px; }
+      .agent .bubble-time { text-align: right; }
+      .typing { display: inline-flex; gap: 3px; align-items: center; }
+      .typing span { width: 4px; height: 4px; border-radius: 50%; background: #8d98a9; animation: pulse 1.1s infinite ease-in-out; }
+      .typing span:nth-child(2) { animation-delay: .15s; }
+      .typing span:nth-child(3) { animation-delay: .3s; }
+      @keyframes pulse { 0%,60%,100% { opacity:.3; transform:translateY(0); } 30% { opacity:1; transform:translateY(-2px); } }
+
+      .composer { display: grid; grid-template-rows: 34px minmax(0,1fr) 36px; border-top: 1px solid var(--line); background: white; }
+      .composer-tools { display: flex; align-items: center; gap: 4px; padding: 3px 10px 0; }
+      .composer-tool { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 0; background: transparent; color: #7e8898; cursor: pointer; }
+      .composer-tool i { width: 14px; height: 14px; }
+      .composer textarea { width: 100%; height: 100%; padding: 7px 14px; resize: none; border: 0; color: var(--ink); font-size: 10px; line-height: 1.55; }
+      .composer-bottom { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 0 11px 7px; }
+      .send-tip { margin-right: auto; color: #a0a8b5; font-size: 8px; }
+      .secondary-button, .primary-button {
+        min-height: 28px; padding: 0 11px; border: 1px solid var(--line); border-radius: 4px; background: white; cursor: pointer; font-size: 9px;
+      }
+      .primary-button { border-color: var(--blue); background: var(--blue); color: white; font-weight: 700; }
+
+      .copilot {
+        grid-column: 4;
+        min-height: 0;
+        display: grid;
+        grid-template-rows: auto auto minmax(0,1fr);
+        border-left: 1px solid var(--line);
+        background: white;
+      }
+      .copilot-head { padding: 14px 16px 11px; border-bottom: 1px solid var(--line); }
+      .copilot-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+      .copilot-brand { display: flex; align-items: center; gap: 9px; }
+      .copilot-logo { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 5px; background: linear-gradient(145deg,#3d83f5,#655ee7); color: white; }
+      .copilot-logo i { width: 16px; height: 16px; }
+      .copilot-brand strong { display: block; font-size: 11px; }
+      .copilot-brand span { display: block; margin-top: 2px; color: #8190a4; font-size: 8px; }
+      .live-badge { padding: 4px 7px; border-radius: 3px; background: #e9f8f1; color: #22815d; font-size: 8px; font-weight: 750; }
+      .copilot-tabs { display: grid; grid-template-columns: repeat(4,1fr); padding: 0 13px; border-bottom: 1px solid var(--line); }
+      .copilot-tab { height: 38px; position: relative; padding: 0; border: 0; background: transparent; color: #7f8999; cursor: pointer; font-size: 9px; }
+      .copilot-tab.active { color: var(--blue); font-weight: 750; }
+      .copilot-tab.active::after { content:""; position:absolute; left:16px; right:16px; bottom:-1px; height:2px; background:var(--blue); }
+      .copilot-scroll { min-height: 0; overflow-y: auto; }
+      .copilot-panel { display: none; }
+      .copilot-panel.active { display: block; }
+      .signal-bar { display: grid; grid-template-columns: 1fr 1fr 1fr; border-bottom: 1px solid var(--line); background: #fbfcfe; }
+      .signal { min-height: 58px; padding: 11px 12px; border-right: 1px solid var(--line); }
+      .signal:last-child { border-right: 0; }
+      .signal small { display: block; margin-bottom: 5px; color: #8a95a5; font-size: 7px; text-transform: uppercase; }
+      .signal strong { display: block; font-size: 10px; }
+      .signal .risk { color: #c26b20; }
+      .copilot-section { padding: 15px 16px; border-bottom: 1px solid var(--line); }
+      .section-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 11px; }
+      .section-title strong { font-size: 10px; }
+      .section-title span { color: #8590a2; font-size: 8px; }
+      .intent-flow { display: grid; grid-template-columns: 1fr 14px 1fr 14px 1fr; align-items: center; }
+      .intent-node { min-height: 48px; display: grid; place-items: center; padding: 7px 5px; border: 1px solid #dce2eb; border-radius: 4px; background: #f9fbfe; text-align: center; }
+      .intent-node small { display:block; margin-bottom:4px; color:#8a95a5; font-size:7px; }
+      .intent-node strong { font-size:9px; line-height:1.35; }
+      .intent-arrow { color:#aab2bf; text-align:center; font-size:10px; }
+      .memory-line { display:flex; gap:9px; align-items:flex-start; margin:9px 0; font-size:9px; line-height:1.5; }
+      .memory-date { flex:0 0 54px; color:#929baa; }
+      .memory-line strong { color:#39465a; font-weight:650; }
+      .suggestion {
+        padding: 12px; border: 1px solid #d8e3f6; border-radius: 5px; background: #f4f8ff; color: #36445a; font-size: 10px; line-height: 1.68;
+      }
+      .suggestion-meta { display:flex; gap:6px; margin-bottom:8px; }
+      .chip { padding:3px 6px; border-radius:3px; background:white; color:#64728a; font-size:7px; }
+      .chip.blue { background:#e0ebff; color:#2a63c4; }
+      .suggestion-actions { display:grid; grid-template-columns:1fr 1fr; gap:7px; margin-top:10px; }
+      .suggestion-actions button { min-height:31px; border:1px solid #cfdaec; border-radius:4px; background:white; cursor:pointer; color:#4f6078; font-size:8px; font-weight:700; }
+      .suggestion-actions .insert { border-color:var(--blue); background:var(--blue); color:white; }
+      .evidence-item { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:9px; align-items:start; padding:10px 0; border-bottom:1px solid #edf0f4; }
+      .evidence-item:last-child { border-bottom:0; }
+      .evidence-icon { width:27px;height:27px;display:grid;place-items:center;border-radius:4px;background:#edf3ff;color:var(--blue); }
+      .evidence-icon i { width:14px;height:14px; }
+      .evidence-copy strong { display:block;font-size:9px; }
+      .evidence-copy span { display:block;margin-top:4px;color:#838ea0;font-size:8px;line-height:1.45; }
+      .score { color:var(--green);font-size:8px;font-weight:750; }
+      .trace-step { display:grid;grid-template-columns:22px minmax(0,1fr);gap:9px;position:relative;padding-bottom:14px; }
+      .trace-step:not(:last-child)::after { content:"";position:absolute;left:10px;top:22px;bottom:0;width:1px;background:#dce2ea; }
+      .trace-index { width:22px;height:22px;display:grid;place-items:center;border-radius:50%;background:#eaf2ff;color:var(--blue);font-size:8px;font-weight:750; }
+      .trace-copy strong { display:block;font-size:9px; }
+      .trace-copy span { display:block;margin-top:3px;color:#8791a1;font-size:8px;line-height:1.45; }
+      .risk-footer { padding: 13px 16px; }
+      .risk-action { width:100%;min-height:34px;border:1px solid #efc8a7;border-radius:4px;background:#fff7f0;color:#a65c20;cursor:pointer;font-size:9px;font-weight:750; }
+
+      .toast {
+        position: fixed; z-index: 20; left: 50%; bottom: 24px; min-height: 38px; display:flex;align-items:center;gap:8px;
+        padding:0 14px;border-radius:4px;background:#172033;color:white;box-shadow:0 10px 30px rgba(23,32,51,.25);
+        transform:translate(-50%,15px);opacity:0;pointer-events:none;transition:transform 160ms ease, opacity 160ms ease;font-size:9px;
+      }
+      .toast.show { transform:translate(-50%,0);opacity:1; }
+      .toast i { width:14px;height:14px; }
+
+      /* Refined QianNiu-inspired desktop skin */
+      html, body {
+        min-height: 700px;
+        background: #dfe4eb;
+      }
+      body { padding: 10px; }
+      .app {
+        width: 100%;
+        height: calc(100vh - 20px);
+        grid-template-columns: 62px 262px minmax(520px, 1fr) 388px;
+        grid-template-rows: 64px minmax(0, 1fr);
+        overflow: hidden;
+        border: 1px solid rgba(103, 119, 143, .22);
+        border-radius: 16px;
+        box-shadow: 0 18px 48px rgba(45, 59, 79, .18);
+      }
+      .global-rail {
+        padding: 12px 7px 10px;
+        background: #3577ea;
+      }
+      .brand-mark {
+        width: 40px;
+        height: 40px;
+        margin-bottom: 20px;
+        border: 0;
+        background: rgba(255,255,255,.18);
+      }
+      .brand-mark i { width: 18px; height: 18px; }
+      .rail-nav { gap: 7px; }
+      .rail-item {
+        min-height: 54px;
+        border-radius: 8px;
+        font-size: 10px;
+      }
+      .rail-item i { width: 19px; height: 19px; }
+      .rail-item.active { background: rgba(255,255,255,.2); }
+      .agent-orb { width: 38px; height: 38px; border: 0; box-shadow: 0 5px 14px rgba(16,52,121,.28); }
+      .topbar {
+        grid-template-columns: 262px minmax(0, 1fr) 388px;
+        background: #ffffff;
+      }
+      .account-block { padding: 0 17px; }
+      .avatar { width: 35px; height: 35px; font-size: 12px; }
+      .account-copy strong { max-width: 160px; font-size: 12px; }
+      .account-copy span { margin-top: 4px; font-size: 10px; }
+      .work-stats {
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 34px;
+        padding: 0 24px;
+        overflow: hidden;
+      }
+      .work-stat { flex: 0 0 auto; text-align: left; }
+      .work-stat strong { display: block; color: #1d2635; font-size: 18px; line-height: 1; font-weight: 650; }
+      .work-stat span { display: block; margin-top: 5px; color: #8b94a3; font-size: 9px; }
+      .work-stat.positive strong { color: #25835f; }
+      .top-tools { gap: 10px; padding: 0 17px; }
+      .agent-state { font-size: 10px; }
+
+      .inbox { background: #f8f9fb; }
+      .inbox-search { padding: 14px 14px 8px; }
+      .search-field input {
+        height: 36px;
+        border-color: transparent;
+        border-radius: 8px;
+        background: #eef1f5;
+        font-size: 11px;
+      }
+      .search-field i { top: 11px; }
+      .inbox-tabs { padding: 2px 14px 0; border-bottom: 0; }
+      .inbox-tab { height: 40px; }
+      .inbox-tab.active::after { left: 18px; right: 18px; }
+      .conversation-summary { padding: 13px 17px 8px; font-size: 10px; }
+      .conversation-item {
+        width: calc(100% - 16px);
+        min-height: 72px;
+        grid-template-columns: 40px minmax(0, 1fr) auto;
+        margin: 3px 8px;
+        padding: 11px 10px;
+        border: 0;
+        border-radius: 8px;
+      }
+      .conversation-item.active { background: #e8edf5; box-shadow: none; }
+      .customer-avatar { width: 38px; height: 38px; font-size: 12px; }
+      .conversation-name { margin-bottom: 7px; font-size: 12px; }
+      .conversation-preview { font-size: 10px; }
+      .conversation-meta { padding-top: 2px; font-size: 9px; }
+
+      .chat { grid-template-rows: 60px minmax(0, 1fr) 154px; background: #f3f5f8; }
+      .chat-head { padding: 0 20px; }
+      .chat-person strong { font-size: 13px; }
+      .chat-person span { margin-top: 4px; font-size: 9px; }
+      .chat-action { width: 34px; height: 34px; }
+      .chat-action:hover { border-radius: 6px; background: #f0f2f5; }
+      .chat-feed { padding: 22px 28px 32px; }
+      .system-time { margin-bottom: 19px; font-size: 9px; }
+      .order-card {
+        width: min(470px, 86%);
+        margin-bottom: 24px;
+        padding: 14px;
+        border: 0;
+        border-radius: 9px;
+        box-shadow: 0 5px 18px rgba(39,55,78,.08);
+      }
+      .order-label { margin-bottom: 11px; font-size: 9px; }
+      .product-thumb {
+        position: relative;
+        width: 52px;
+        height: 52px;
+        overflow: hidden;
+        border-radius: 7px;
+        background: #f4eae3;
+        color: transparent;
+      }
+      .product-thumb::before {
+        content: "";
+        position: absolute;
+        left: 17px;
+        top: 10px;
+        width: 18px;
+        height: 32px;
+        border-radius: 3px 3px 6px 6px;
+        background: linear-gradient(180deg,#f7f2ed,#cda88f);
+        box-shadow: 0 3px 8px rgba(95,60,42,.16);
+      }
+      .product-thumb::after {
+        content: "";
+        position: absolute;
+        left: 20px;
+        top: 6px;
+        width: 12px;
+        height: 8px;
+        border-radius: 2px;
+        background: #aa8068;
+      }
+      .product-copy strong { font-size: 11px; }
+      .product-copy span { margin-top: 6px; font-size: 9px; }
+      .price { font-size: 12px; }
+      .bubble-row { gap: 10px; margin: 17px 0; }
+      .bubble-avatar { width: 32px; height: 32px; font-size: 10px; }
+      .bubble {
+        max-width: min(560px, 74%);
+        padding: 11px 13px;
+        border-radius: 7px;
+        font-size: 12px;
+        line-height: 1.65;
+        box-shadow: 0 2px 8px rgba(36,48,68,.07);
+      }
+      .agent .bubble { background: #dce9ff; }
+      .bubble-time { margin-top: 6px; font-size: 8px; }
+      .composer { grid-template-rows: 38px minmax(0,1fr) 42px; border-top: 1px solid #e2e6ec; }
+      .composer-tools { padding: 5px 15px 0; gap: 6px; }
+      .composer-tool { width: 30px; height: 30px; }
+      .composer textarea { padding: 8px 18px; font-size: 12px; }
+      .composer-bottom { padding: 0 15px 10px; }
+      .secondary-button, .primary-button { min-height: 31px; padding: 0 14px; font-size: 10px; }
+
+      .copilot { background: #f4f6f9; }
+      .copilot-head { padding: 14px 17px 12px; background: white; }
+      .copilot-logo { width: 34px; height: 34px; border-radius: 8px; background: #3977ef; }
+      .copilot-brand strong { font-size: 12px; }
+      .copilot-brand span { margin-top: 4px; font-size: 9px; }
+      .copilot-tabs { padding: 0 17px; background: white; }
+      .copilot-tab { height: 43px; font-size: 10px; }
+      .copilot-scroll { padding: 12px; background: #f4f6f9; }
+      .signal-bar {
+        overflow: hidden;
+        margin-bottom: 10px;
+        border: 0;
+        border-radius: 9px;
+        background: white;
+        box-shadow: 0 2px 10px rgba(38,54,78,.05);
+      }
+      .signal { min-height: 66px; padding: 13px 12px; }
+      .signal small { margin-bottom: 7px; font-size: 8px; }
+      .signal strong { font-size: 11px; }
+      .copilot-section {
+        margin-bottom: 10px;
+        padding: 16px;
+        border: 0;
+        border-radius: 9px;
+        background: white;
+        box-shadow: 0 2px 10px rgba(38,54,78,.05);
+      }
+      .section-title { margin-bottom: 13px; }
+      .section-title strong { font-size: 12px; }
+      .section-title span { font-size: 9px; }
+      .intent-flow { grid-template-columns: 1fr 16px 1fr 16px 1fr; }
+      .intent-node { min-height: 54px; border: 0; border-radius: 7px; background: #f4f6f9; }
+      .intent-node small { margin-bottom: 5px; font-size: 8px; }
+      .intent-node strong { font-size: 10px; }
+      .memory-line { gap: 11px; margin: 11px 0; font-size: 10px; }
+      .memory-date { flex-basis: 58px; }
+      .suggestion {
+        padding: 13px 14px;
+        border: 1px solid #dce7fb;
+        border-radius: 8px;
+        background: #f5f8fe;
+        font-size: 11px;
+        line-height: 1.72;
+      }
+      .chip { padding: 4px 7px; border-radius: 4px; font-size: 8px; }
+      .suggestion-actions { margin-top: 9px; }
+      .suggestion-actions button { min-height: 34px; border-radius: 6px; font-size: 9px; }
+      .risk-footer { padding: 0 0 2px; }
+      .risk-action { min-height: 37px; border-radius: 7px; background: #fff8f2; font-size: 10px; }
+      .evidence-item { padding: 12px 0; }
+      .evidence-icon { width: 31px; height: 31px; border-radius: 6px; }
+      .evidence-copy strong { font-size: 10px; }
+      .evidence-copy span { margin-top: 5px; font-size: 9px; }
+      .score { font-size: 9px; }
+      .trace-copy strong { font-size: 10px; }
+      .trace-copy span { font-size: 9px; }
+
+      .summary-callout {
+        display: flex;
+        gap: 10px;
+        padding: 12px;
+        border-left: 3px solid var(--blue);
+        border-radius: 6px;
+        background: #f4f7fc;
+        color: #263449;
+        font-size: 11px;
+        line-height: 1.65;
+      }
+      .summary-callout i { width: 16px; height: 16px; flex: 0 0 auto; margin-top: 1px; color: var(--blue); }
+      .summary-callout.alert { border-left-color: #ef6a63; background: #fff5f4; }
+      .summary-callout.alert i { color: #df514b; }
+      .plain-list { display: grid; gap: 9px; }
+      .plain-row { display: grid; grid-template-columns: 20px minmax(0,1fr); gap: 9px; align-items: start; }
+      .plain-row-icon {
+        width: 20px; height: 20px; display: grid; place-items: center;
+        border-radius: 50%; background: #edf3ff; color: var(--blue);
+      }
+      .plain-row-icon i { width: 11px; height: 11px; }
+      .plain-row.warning .plain-row-icon { background: #fff0ec; color: #dc5b4f; }
+      .plain-row-copy strong { display: block; font-size: 10px; line-height: 1.45; }
+      .plain-row-copy span { display: block; margin-top: 2px; color: #7f8a9b; font-size: 9px; line-height: 1.5; }
+      .status-pill { padding: 4px 7px; border-radius: 12px; background: #eaf7f1; color: #21805d; font-size: 8px; font-weight: 700; }
+      .status-pill.warn { background: #fff2e8; color: #b76625; }
+      .status-pill.danger { background: #fff0ef; color: #c94843; }
+      .ticket-box { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+      .ticket-field { min-width: 0; padding: 10px; border-radius: 6px; background: #f5f7fa; }
+      .ticket-field small { display: block; margin-bottom: 5px; color: #8a94a4; font-size: 8px; }
+      .ticket-field strong { display: block; overflow: hidden; color: #344156; font-size: 9px; line-height: 1.45; text-overflow: ellipsis; }
+      .image-attachment { display: grid; grid-template-columns: 46px minmax(0,1fr); gap: 10px; align-items: center; min-width: 210px; }
+      .image-placeholder {
+        width: 46px; height: 46px; display: grid; place-items: center;
+        border: 1px solid #d9e0e9; border-radius: 5px; background: #f5f7fa; color: #8a95a5;
+      }
+      .image-placeholder i { width: 18px; height: 18px; }
+      .image-copy strong { display: block; font-size: 10px; }
+      .image-copy span { display: block; margin-top: 4px; color: #8d97a7; font-size: 8px; }
+      .data-note { color: #929baa; font-size: 8px; }
+      .risk-action.neutral { border-color: #cbdaf3; background: #f4f8ff; color: #315fAD; }
+      .risk-action.done { border-color: #c9e3d8; background: #eff9f5; color: #27775b; }
+
+      /* Vercel Web Interface Guidelines: accessibility and layout refinement */
+      * { -webkit-tap-highlight-color: rgba(47, 114, 238, .14); }
+      button { touch-action: manipulation; }
+      .sr-only {
+        position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+        overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+      }
+      .skip-link {
+        position: fixed; z-index: 100; left: 16px; top: 12px; padding: 9px 12px;
+        border-radius: 6px; background: #15233a; color: white; font-size: 12px;
+        transform: translateY(-160%); transition: transform 140ms ease;
+      }
+      .skip-link:focus { transform: translateY(0); }
+      html, body { min-width: 1024px; min-height: 640px; background: #fff; }
+      body { padding: 0; }
+      .app {
+        height: 100vh;
+        grid-template-columns: 64px 264px minmax(480px, 1fr) 400px;
+        grid-template-rows: 64px minmax(0, 1fr);
+        border: 0;
+        border-radius: 0;
+        box-shadow: none;
+      }
+      .topbar { grid-template-columns: 264px minmax(0, 1fr) 400px; }
+      .global-rail { padding-inline: 8px; }
+      .rail-item { min-height: 52px; font-size: 11px; }
+      .rail-item:hover { background: rgba(255,255,255,.12); color: #fff; }
+      .rail-item:active { background: rgba(255,255,255,.24); }
+      .account-copy strong { font-size: 13px; }
+      .account-copy span, .agent-state { font-size: 10px; }
+      .work-stat strong, .price { font-variant-numeric: tabular-nums; }
+      .work-stat span { font-size: 10px; }
+      .top-tool, .chat-action, .composer-tool, .inbox-tab { border-radius: 6px; }
+      .top-tool:hover, .chat-action:hover, .composer-tool:hover, .inbox-tab:hover { background: #eef2f7; color: #344157; }
+      .inbox { background: #f8f9fb; }
+      .search-field:focus-within { border-radius: 8px; box-shadow: 0 0 0 2px rgba(47,114,238,.2); }
+      .search-field input { font-size: 12px; }
+      .search-field input:focus-visible { outline: 0; }
+      .conversation-summary { font-size: 10px; }
+      .conversation-item { width: calc(100% - 12px); margin: 2px 6px; border-radius: 6px; }
+      .conversation-item.active { background: #eaf1fd; box-shadow: inset 3px 0 0 var(--blue); }
+      .conversation-item:active { background: #e0e9f8; }
+      .conversation-name { font-size: 12px; }
+      .conversation-name span, .conversation-preview, .conversation-meta { font-size: 10px; }
+      .unread { font-size: 9px; }
+      .empty-state { padding: 28px 18px; color: #7b8595; font-size: 11px; line-height: 1.6; text-align: center; }
+      .chat { grid-template-rows: 60px minmax(0, 1fr) 156px; }
+      .chat-feed { padding: 24px 28px 34px; overscroll-behavior: contain; }
+      .system-time, .order-label, .product-copy span, .bubble-time { font-size: 10px; }
+      .bubble { max-width: min(570px, 78%); border: 1px solid #e7ebf1; box-shadow: none; }
+      .agent .bubble { border-color: #ccdbf4; background: #e5efff; }
+      .composer { grid-template-rows: 40px minmax(0,1fr) 44px; }
+      .composer textarea { padding: 8px 18px; font-size: 13px; }
+      .composer textarea:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+      .secondary-button, .primary-button { min-height: 34px; font-size: 11px; }
+      .secondary-button:hover { background: #f3f5f8; border-color: #cfd5df; }
+      .primary-button:hover { background: var(--blue-dark); }
+      .copilot { background: #fff; }
+      .copilot-head { padding: 13px 20px; }
+      .copilot-brand strong { font-size: 13px; }
+      .copilot-brand span { font-size: 10px; }
+      .live-badge, .status-pill { font-size: 9px; }
+      .copilot-tabs { padding: 0 20px; }
+      .copilot-tab { height: 44px; font-size: 11px; }
+      .copilot-tab:hover { color: #2c5fab; background: #f7f9fc; }
+      .copilot-scroll { padding: 0; background: #fff; overscroll-behavior: contain; }
+      .signal-bar { margin: 0; border-radius: 0; border-bottom: 1px solid var(--line); box-shadow: none; }
+      .signal { min-height: 70px; padding: 15px 14px; }
+      .signal small { font-size: 9px; }
+      .signal strong { font-size: 12px; overflow-wrap: anywhere; }
+      .copilot-section {
+        margin: 0;
+        padding: 18px 20px;
+        border-bottom: 1px solid #e8ebf0;
+        border-radius: 0;
+        box-shadow: none;
+      }
+      .section-title { margin-bottom: 14px; }
+      .section-title h2 { margin: 0; font-size: 13px; line-height: 1.3; text-wrap: balance; }
+      .section-title h2 { scroll-margin-top: 12px; }
+      .section-title span { font-size: 10px; }
+      .summary-callout { padding: 12px 13px; font-size: 12px; overflow-wrap: anywhere; }
+      .bubble, .suggestion, .plain-row-copy, .image-copy { overflow-wrap: anywhere; }
+      .plain-list { gap: 12px; }
+      .plain-row-copy strong { font-size: 11px; }
+      .plain-row-copy span { font-size: 10px; }
+      .suggestion { padding: 13px 14px; font-size: 12px; }
+      .chip { font-size: 9px; }
+      .suggestion-actions button, .risk-action { min-height: 36px; font-size: 11px; }
+      .suggestion-actions button:hover { border-color: #9fb5d9; background: #f4f7fc; }
+      .suggestion-actions .insert:hover { border-color: var(--blue-dark); background: var(--blue-dark); }
+      .risk-action:hover { filter: brightness(.97); }
+      .ticket-field small { font-size: 9px; }
+      .ticket-field strong, .trace-copy strong { font-size: 11px; overflow-wrap: anywhere; }
+      .trace-copy span { font-size: 10px; overflow-wrap: anywhere; }
+      .toast { bottom: 20px; min-height: 42px; font-size: 11px; transition: transform 160ms ease, opacity 160ms ease; }
+      .conversation-wrap, .chat-feed, .copilot-scroll { scrollbar-width: thin; scrollbar-color: #c8ced8 transparent; }
+      .image-attachment.has-preview { grid-template-columns: 84px minmax(0, 1fr); }
+      .message-photo {
+        width: 84px;
+        height: 84px;
+        display: block;
+        object-fit: cover;
+        border: 1px solid #d9e0e9;
+        border-radius: 6px;
+        background: #f5f7fa;
+      }
+      .visual-list { display: grid; gap: 10px; }
+      .visual-result {
+        display: grid;
+        grid-template-columns: 34px minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: start;
+        padding: 11px;
+        border: 1px solid #dfe5ed;
+        border-radius: 7px;
+        background: #fafbfd;
+      }
+      .visual-result.review { border-color: #f0cfb6; background: #fffaf6; }
+      .visual-result-icon {
+        width: 34px;
+        height: 34px;
+        display: grid;
+        place-items: center;
+        border-radius: 6px;
+        background: #eaf2ff;
+        color: var(--blue);
+      }
+      .visual-result.review .visual-result-icon { background: #fff0e5; color: #bd6728; }
+      .visual-result-icon i { width: 16px; height: 16px; }
+      .visual-result-copy strong { display: block; font-size: 11px; line-height: 1.45; }
+      .visual-result-copy span { display: block; margin-top: 4px; color: #737f91; font-size: 10px; line-height: 1.5; }
+      .visual-confidence { color: #6f7c8e; font-size: 9px; white-space: nowrap; }
+      .profile-summary { margin: 0 0 12px; color: #435065; font-size: 11px; line-height: 1.65; }
+      .profile-traits { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      .profile-trait { min-width: 0; padding: 10px; border-radius: 6px; background: #f5f7fa; }
+      .profile-trait small { display: block; color: #8791a1; font-size: 9px; }
+      .profile-trait strong { display: block; margin-top: 5px; color: #354257; font-size: 10px; overflow-wrap: anywhere; }
+      .profile-scope { display: block; margin-top: 10px; color: #939ba8; font-size: 9px; line-height: 1.5; }
+      .skill-row { display: grid; grid-template-columns: 22px minmax(0,1fr) auto; gap: 9px; align-items: start; padding: 9px 0; border-bottom: 1px solid #edf0f4; }
+      .skill-row:last-child { border-bottom: 0; }
+      .skill-row .skill-icon { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 50%; background: #eaf2ff; color: var(--blue); }
+      .skill-row .skill-icon i { width: 12px; height: 12px; }
+      .skill-row.skipped .skill-icon { background: #f1f3f6; color: #a7afba; }
+      .skill-row .skill-copy strong { display: block; font-size: 10px; }
+      .skill-row .skill-copy span { display: block; margin-top: 3px; color: #8590a2; font-size: 9px; line-height: 1.45; }
+      .skill-row .skill-mode { flex: 0 0 auto; padding: 2px 6px; border-radius: 3px; background: #eef0f4; color: #758095; font-size: 8px; white-space: nowrap; }
+      .skill-row.skipped .skill-mode { background: transparent; color: #b2b9c4; }
+      .skill-row .skill-mode.model { background: #fff1e2; color: #b76625; }
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+      }
+      @media (max-width: 1100px) {
+        html, body { min-width: 900px; }
+        .app { grid-template-columns: 58px minmax(440px, 1fr) 360px; }
+        .inbox, .account-block { display: none; }
+        .topbar { grid-column: 2 / span 2; grid-template-columns: minmax(0,1fr) 360px; }
+        .chat { grid-column: 2; }
+        .copilot { grid-column: 3; }
+        .work-stats { gap: 24px; }
+      }
+      @media (max-width: 899px) {
+        html, body { min-width: 0; min-height: 0; height: auto; overflow-x: hidden; overflow-y: auto; }
+        .app {
+          min-height: 100vh;
+          height: auto;
+          grid-template-columns: 52px minmax(0, 1fr);
+          grid-template-rows: 56px 560px auto;
+          overflow: visible;
+        }
+        .global-rail { position: fixed; z-index: 20; top: 0; bottom: 0; left: 0; width: 52px; height: 100dvh; grid-row: 1 / span 3; padding: max(9px, env(safe-area-inset-top)) 5px max(9px, env(safe-area-inset-bottom)); }
+        .brand-mark { width: 36px; height: 36px; margin-bottom: 12px; }
+        .rail-item { min-height: 48px; font-size: 9px; }
+        .rail-item i { width: 17px; height: 17px; }
+        .topbar { grid-column: 2; grid-template-columns: 1fr; }
+        .work-stats { display: none; }
+        .top-tools { min-width: 0; padding: 0 10px; border-left: 0; }
+        .top-tool { width: 32px; }
+        .agent-state { white-space: nowrap; }
+        .chat { grid-column: 2; grid-row: 2; grid-template-rows: 58px minmax(0, 1fr) 156px; }
+        .chat-feed { padding: 18px 14px 24px; }
+        .chat-head { padding: 0 12px; }
+        .bubble { max-width: 84%; font-size: 11px; }
+        .bubble-avatar { width: 28px; height: 28px; }
+        .order-card { width: 100%; }
+        .send-tip { display: none; }
+        .copilot { grid-column: 2; grid-row: 3; min-height: 680px; border-top: 1px solid var(--line); border-left: 0; }
+        .copilot-scroll { overflow: visible; }
+        .ticket-box { grid-template-columns: 1fr; }
+        .toast { max-width: calc(100vw - 32px); text-align: center; }
+      }
+    </style>
+    <link rel="stylesheet" href="/static/app.css?v=20260909-4" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">跳到当前会话</a>
+    <h1 class="sr-only">BeautyCare 智能客服工作台</h1>
+    <div class="app">
+      <aside class="global-rail" aria-label="主导航">
+        <div class="brand-mark" aria-hidden="true"><i data-lucide="sparkles"></i></div>
+        <nav class="rail-nav" aria-label="工作台功能">
+          <button class="rail-item active" id="serviceNav" type="button" aria-current="page"><i data-lucide="messages-square"></i><span>服务台</span></button>
+          <button class="rail-item" type="button"><i data-lucide="bell"></i><span>消息</span><span class="badge">3</span></button>
+          <button class="rail-item" type="button"><i data-lucide="contact-round"></i><span>客户</span></button>
+          <button class="rail-item" type="button"><i data-lucide="clipboard-list"></i><span>工单</span></button>
+          <button class="rail-item" id="riskNav" type="button"><i data-lucide="shield-alert"></i><span>风险台</span><span class="badge" id="riskBadge">0</span></button>
+        </nav>
+        <div class="rail-spacer"></div>
+        <div class="agent-orb" aria-hidden="true"><i data-lucide="sparkles"></i></div>
+      </aside>
+
+      <header class="topbar">
+        <div class="account-block">
+          <div class="avatar">林</div>
+          <div class="account-copy"><strong>林小稚 · 客服组</strong><span>● 在线</span></div>
+        </div>
+        <div class="work-stats">
+          <div class="work-stat"><strong>0</strong><span>重点会话</span></div>
+          <div class="work-stat"><strong>0</strong><span>风险待办</span></div>
+          <div class="work-stat"><strong>0</strong><span>承诺待跟</span></div>
+          <div class="work-stat positive"><strong id="modelStateStat">…</strong><span>助手状态</span></div>
+        </div>
+        <div class="top-tools">
+          <div class="agent-state" id="systemState">正在连接服务助手…</div>
+          <button class="top-tool" type="button" title="搜索" aria-label="全局搜索"><i data-lucide="search"></i></button>
+          <button class="top-tool" type="button" title="通知" aria-label="查看通知"><i data-lucide="bell"></i></button>
+          <button class="top-tool" type="button" title="设置" aria-label="打开设置"><i data-lucide="settings"></i></button>
+        </div>
+      </header>
+
+      <aside class="inbox">
+        <div class="inbox-search">
+          <div class="search-field"><i data-lucide="search"></i><input id="searchInput" name="conversation-search" type="search" aria-label="搜索客户、订单或聊天内容" autocomplete="off" placeholder="搜索客户、订单、聊天内容…" /></div>
+        </div>
+        <div class="inbox-tabs" aria-label="会话筛选">
+          <button class="inbox-tab active" type="button" title="进行中" aria-label="查看进行中的会话" aria-pressed="true"><i data-lucide="message-square-more"></i></button>
+          <button class="inbox-tab" type="button" title="稍后处理" aria-label="查看稍后处理的会话" aria-pressed="false"><i data-lucide="clock-3"></i></button>
+          <button class="inbox-tab" type="button" title="已完成" aria-label="查看已完成的会话" aria-pressed="false"><i data-lucide="circle-check-big"></i></button>
+          <button class="inbox-tab" type="button" title="成员" aria-label="查看客服成员" aria-pressed="false"><i data-lucide="users"></i></button>
+        </div>
+        <div class="conversation-wrap">
+          <div class="conversation-summary"><strong>重点会话 4</strong><span>4 类关键场景</span></div>
+          <div id="conversationList"></div>
+        </div>
+      </aside>
+
+      <main class="chat" id="main-content" tabindex="-1" aria-label="当前客户会话">
+        <header class="chat-head">
+          <div class="chat-person"><div class="customer-avatar" id="chatAvatar" style="--avatar:#c2876d">陈</div><div><strong id="chatName">陈雨桐</strong><span id="chatStatus">● 在线 · 天猫</span></div></div>
+          <div class="chat-actions">
+            <button class="chat-action" type="button" title="客户档案" aria-label="查看客户档案"><i data-lucide="contact"></i></button>
+            <button class="chat-action" type="button" title="历史订单" aria-label="查看历史订单"><i data-lucide="receipt-text"></i></button>
+            <button class="chat-action" type="button" title="更多" aria-label="更多会话操作"><i data-lucide="ellipsis"></i></button>
+          </div>
+        </header>
+        <div class="chat-feed" id="chatFeed"></div>
+        <section class="composer" aria-label="回复客户">
+          <div class="quality-strip" id="qualityStrip" role="alert" hidden>
+            <i data-lucide="shield-alert"></i>
+            <span id="qualityMessage"></span>
+            <button id="dismissQuality" type="button" aria-label="关闭提示"><i data-lucide="x"></i></button>
+          </div>
+          <div class="composer-tools">
+            <button class="composer-tool" type="button" title="表情" aria-label="添加表情"><i data-lucide="smile"></i></button>
+            <button class="composer-tool" type="button" title="图片" aria-label="添加图片"><i data-lucide="image"></i></button>
+            <button class="composer-tool" type="button" title="文件" aria-label="添加文件"><i data-lucide="paperclip"></i></button>
+            <button class="composer-tool" type="button" title="知识库" aria-label="打开知识库"><i data-lucide="book-open"></i></button>
+            <button class="composer-tool" type="button" title="快捷话术" aria-label="打开快捷话术"><i data-lucide="messages-square"></i></button>
+          </div>
+          <label class="sr-only" for="replyInput">回复内容</label>
+          <textarea id="replyInput" name="reply" autocomplete="off" placeholder="输入回复，或使用右侧建议…"></textarea>
+          <div class="composer-bottom"><span class="send-tip">Enter 发送 · Shift + Enter 换行</span><button class="secondary-button" id="closeConversation" type="button">稍后处理</button><button class="primary-button" id="sendReply" type="button">发送 <span>⌄</span></button></div>
+        </section>
+      </main>
+
+      <aside class="copilot" aria-label="客服辅助信息">
+        <header class="copilot-head">
+          <div class="copilot-title">
+            <div class="copilot-brand"><div class="copilot-logo"><i data-lucide="heart-handshake"></i></div><div><strong>暖心助手</strong><span id="assistantSubtitle">已整理当前会话</span></div></div>
+            <div class="assistant-status"><span class="live-badge" id="aiModeBadge">连接中</span><button class="icon-command" id="reanalyze" type="button" title="重新分析" aria-label="重新分析当前会话"><i data-lucide="refresh-cw"></i></button></div>
+          </div>
+        </header>
+        <div class="copilot-tabs" role="tablist" aria-label="辅助信息分类">
+          <button class="copilot-tab active" id="tab-assist" data-panel="assist" type="button" role="tab" aria-selected="true" aria-controls="panel-assist">怎么回复</button>
+          <button class="copilot-tab" id="tab-journey" data-panel="journey" type="button" role="tab" aria-selected="false" aria-controls="panel-journey" tabindex="-1">客户信息</button>
+          <button class="copilot-tab" id="tab-progress" data-panel="progress" type="button" role="tab" aria-selected="false" aria-controls="panel-progress" tabindex="-1">处理记录</button>
+          <button class="copilot-tab" id="tab-trace" data-panel="trace" type="button" role="tab" aria-selected="false" aria-controls="panel-trace" tabindex="-1">AI处理过程</button>
+        </div>
+        <div class="copilot-scroll">
+          <section class="copilot-panel active" id="panel-assist" role="tabpanel" aria-labelledby="tab-assist">
+            <div class="signal-bar">
+              <div class="signal"><small>客户心情</small><strong><span id="signalEmotionIcon" aria-hidden="true">😟</span> <span id="signalEmotion">着急</span></strong></div>
+              <div class="signal"><small>当前问题</small><strong id="signalStatus">换货</strong></div>
+              <div class="signal"><small>提醒</small><strong class="risk" id="signalRisk">需关注</strong></div>
+            </div>
+            <section class="resolution-card" aria-labelledby="resolutionTitle">
+              <div class="resolution-heading">
+                <div><span class="resolution-emoji" aria-hidden="true">🧭</span><strong id="resolutionTitle">解决进度</strong><span class="resolution-stage" id="resolutionStage">正在判断</span></div>
+                <output id="resolutionScore" aria-label="当前解决进度">0%</output>
+              </div>
+              <div class="resolution-track" id="resolutionProgress" role="progressbar" aria-label="问题解决进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                <span id="resolutionFill"></span>
+              </div>
+              <p id="resolutionSummary" aria-live="polite">正在整理当前处理情况…</p>
+            </section>
+            <section class="copilot-section assistant-primary-section">
+              <div class="section-title"><h2>客户现在怎么了</h2><span>已核对记录</span></div>
+              <div class="summary-callout" id="needSummary" aria-live="polite"></div>
+              <div class="intent-summary" id="intentDetails" hidden></div>
+            </section>
+            <section class="copilot-section" id="visualSection" hidden>
+              <div class="section-title"><h2>图片核对</h2><span id="visualState">等待识别</span></div>
+              <div class="visual-list" id="visualInsights"></div>
+            </section>
+            <section class="copilot-section assistant-action-section">
+              <div class="section-title"><h2>马上做什么</h2><span id="nextStepCount">2 步</span></div>
+              <div class="plain-list" id="nextSteps"></div>
+            </section>
+            <section class="copilot-section assistant-reply-section">
+              <div class="section-title"><h2>可以这样回复</h2><span>发送前可修改</span></div>
+              <div class="suggestion">
+                <div class="suggestion-meta" id="replyTags"></div>
+                <div id="suggestedReply"></div>
+              </div>
+              <div class="suggestion-actions"><button class="insert" id="insertReply" type="button">填入回复框</button><button id="regenerateReply" type="button">重新生成</button></div>
+              <div class="suggestion-source" id="suggestionSource"></div>
+            </section>
+            <div class="risk-footer"><button class="risk-action" id="createTicket" type="button">设为重点跟进</button></div>
+          </section>
+
+          <section class="copilot-panel" id="panel-journey" role="tabpanel" aria-labelledby="tab-journey" hidden>
+            <section class="copilot-section">
+              <div class="section-title"><h2>客户特点</h2><span>只看有用信息</span></div>
+              <p class="profile-summary" id="profileSummary"></p>
+              <div class="profile-traits" id="profileTraits"></div>
+              <small class="profile-scope" id="profileScope"></small>
+            </section>
+            <section class="copilot-section">
+              <div class="section-title"><h2>之前发生过什么</h2><span>按时间整理</span></div>
+              <div id="journeyTimeline"></div>
+            </section>
+            <section class="copilot-section">
+              <div class="section-title"><h2>已经确认的信息</h2><span>不用再问用户</span></div>
+              <div class="plain-list" id="knownFacts"></div>
+            </section>
+          </section>
+
+          <section class="copilot-panel" id="panel-progress" role="tabpanel" aria-labelledby="tab-progress" hidden>
+            <section class="copilot-section">
+              <div class="section-title"><h2>订单和工单</h2><span class="status-pill" id="ticketStatus">进行中</span></div>
+              <div class="ticket-box" id="ticketBox"></div>
+            </section>
+            <section class="copilot-section">
+              <div class="section-title"><h2>处理到哪一步</h2><span>自动汇总</span></div>
+              <div id="progressTimeline"></div>
+            </section>
+            <section class="copilot-section">
+              <div class="section-title"><h2>是否需要跟进</h2><span id="followupBadge" class="status-pill warn">需要</span></div>
+              <div class="summary-callout" id="followupSummary"></div>
+            </section>
+            <div class="risk-footer"><button class="risk-action neutral" id="followupAction" type="button">添加跟进提醒</button></div>
+          </section>
+
+          <section class="copilot-panel" id="panel-trace" role="tabpanel" aria-labelledby="tab-trace" hidden>
+            <section class="copilot-section">
+              <div class="section-title"><h2>这次分析用了什么</h2><span class="status-pill" id="traceRunBadge">本地规则</span></div>
+              <div class="summary-callout" id="traceRunSummary" aria-live="polite"></div>
+            </section>
+            <section class="copilot-section">
+              <div class="section-title"><h2>调用了哪些能力（Skill）</h2><span id="traceSkillCount"></span></div>
+              <p class="profile-summary" style="margin-bottom:10px;">规则先跑一遍打底，只有满足条件的能力才会被真正调用，避免不必要的等待和成本。</p>
+              <div id="traceSkills"></div>
+            </section>
+            <section class="copilot-section">
+              <div class="section-title"><h2>Agent 分工</h2><span>调度 → 理解 → 回复 → 质检</span></div>
+              <div id="traceAgents"></div>
+            </section>
+          </section>
+        </div>
+      </aside>
+
+      <section class="risk-view" id="riskView" aria-label="风险事件工作台" hidden>
+        <header class="risk-header">
+          <div><p>管理视图</p><h2>需要人工介入的服务事件</h2></div>
+          <div class="risk-header-actions"><button class="secondary-button" id="refreshRisks" type="button"><i data-lucide="refresh-cw"></i>刷新</button><button class="primary-button" id="backToService" type="button"><i data-lucide="messages-square"></i>返回接待</button></div>
+        </header>
+        <div class="risk-kpis" id="riskKpis"></div>
+        <div class="risk-workspace">
+          <section class="risk-list-panel">
+              <div class="risk-toolbar"><div><h3>待处理事件</h3><span id="riskListMeta">正在同步…</span></div><div class="segmented" role="group" aria-label="风险筛选"><button class="active" data-risk-filter="all" type="button" aria-pressed="true">全部</button><button data-risk-filter="high" type="button" aria-pressed="false">高风险</button><button data-risk-filter="unassigned" type="button" aria-pressed="false">待分配</button></div></div>
+            <div class="risk-table" id="riskTable"></div>
+          </section>
+          <aside class="risk-detail" id="riskDetail">
+            <div class="empty-detail"><i data-lucide="mouse-pointer-click"></i><strong>选择一条风险事件</strong><span>查看证据、负责人和处理时限</span></div>
+          </aside>
+        </div>
+      </section>
+    </div>
+    <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"><i data-lucide="circle-check"></i><span id="toastText">已完成</span></div>
+
+    <dialog class="evidence-dialog" id="evidenceDialog" aria-labelledby="evidenceTitle">
+      <div class="dialog-head"><div><span>原始证据</span><h2 id="evidenceTitle">证据详情</h2></div><button id="closeEvidence" type="button" aria-label="关闭证据详情"><i data-lucide="x"></i></button></div>
+      <div id="evidenceContent"></div>
+    </dialog>
+
+    <script type="application/json" id="legacy-data">
+      // Three linked cases from the official competition workbook.
+      const conversations = [
+        {
+          id: "S00001", name: "邓e**", initial: "邓", avatar: "#b78372", channel: "天猫", time: "10:27", unread: 1,
+          preview: "行，那尽快哈", product: "测试轻透粉底液30ml #N02自然色", price: "¥259", productCode: "N02",
+          orderId: "6920185815517983396", orderStatus: "已发货", logistics: "中通 773478190943155",
+          messages: [
+            { role: "user", text: "你好，收到的粉底液泵头是坏的，按不出来东西，急", time: "10:18" },
+            { role: "agent", text: "亲亲抱歉！麻烦拍下破损部位的照片发给测试客服，为您核实换货哈~", time: "10:20" },
+            { role: "user", type: "image", text: "喏，图发你了", imageLabel: "泵头破损照片", time: "10:21" },
+            { role: "agent", text: "收到亲，确认属包装破损，为您登记换货：先给您发全新的，收到后用包裹里的面单把坏的寄回就好，运费我们出~", time: "10:24" },
+            { role: "user", text: "行，那尽快哈", time: "10:25" },
+            { role: "agent", text: "换货单已创建，48小时内发出，给您带来不便啦~", time: "10:27" },
+          ],
+          emotion: "着急", risk: "需关注", status: "换货处理中", alert: false,
+          summary: "用户收到的粉底液泵头损坏，已经提供照片并同意换货，现在最关心补发速度。",
+          nextSteps: [
+            ["直接告知换货进度", "工单已经创建，不要再让用户重复说明问题。"],
+            ["确认补发物流", "补发单号已生成，可直接同步给用户。"],
+            ["保留一次跟进", "48 小时内未揽收时提醒客服主动联系。"],
+          ],
+          knownFacts: [
+            ["订单和商品已找到", "订单 6920185815517983396，粉底液 #N02自然色。"],
+            ["破损照片已收到", "用户已上传泵头破损照片，无需再次索要。"],
+            ["处理方案已确认", "用户接受换货，退回运费由商家承担。"],
+          ],
+          journey: [
+            ["4月29日 08:27", "用户下单测试轻透粉底液 #N02自然色。"],
+            ["4月30日 08:50", "原订单由中通发出。"],
+            ["5月5日 10:21", "用户反馈泵头损坏并上传照片。"],
+            ["5月5日 10:29", "换货工单创建，当前仍在处理中。"],
+          ],
+          progress: [
+            ["已核对", "订单、商品与用户身份已关联。"],
+            ["已确认", "图片证明泵头破损，用户接受换货。"],
+            ["进行中", "补发物流已生成，等待仓库发出。"],
+          ],
+          ticket: { id: "BH919209358357", status: "进行中", type: "到手破损换货", tracking: "圆通 YT7667875838478", owner: "G003" },
+          followup: "需要。换货尚未完成，应关注补发包裹是否在承诺的 48 小时内揽收。",
+          followupState: "need", actionLabel: "设为重点跟进", actionTone: "neutral",
+          replyTags: ["回应着急", "已核对工单", "不重复提问"],
+          reply: "理解您着急使用。我帮您确认了，换货单 BH919209358357 正在处理中，补发单号是圆通 YT7667875838478，预计 48 小时内发出。照片和订单信息都已经收到，不需要您再提供，我会继续帮您关注进度。",
+          shortReply: "理解您着急使用。换货正在处理中，补发单号为圆通 YT7667875838478，预计 48 小时内发出，我会继续帮您关注。",
+          actionToast: "已添加跟进提醒：48 小时未揽收将提醒客服",
+        },
+        {
+          id: "S00018", name: "胡**", initial: "胡", avatar: "#8b83a6", channel: "天猫", time: "19:58", unread: 0,
+          preview: "行，操作挺方便，那等新的到了我就寄回", product: "测试丝绒唇釉 #05枫叶红", price: "¥169", productCode: "#05",
+          orderId: "6920842605036203732", orderStatus: "已发货", logistics: "圆通 YT7601736867218",
+          messages: [
+            { role: "user", text: "开啥玩笑，我买的#05枫叶红，发来个#01赤茶红，色差也太大了，这我没法用...", time: "19:50" },
+            { role: "agent", text: "非常抱歉亲！麻烦您拍一下收到商品的底标色号照片，测试客服马上为您核实处理~", time: "19:51" },
+            { role: "user", type: "image", text: "发你了，你们仓库发货能走点心吗啊", imageLabel: "底标色号照片", time: "19:51" },
+            { role: "agent", text: "确认是仓库发错色号了，实在抱歉！可以直接换货，或者保留错发商品并补偿30元。您选哪个？", time: "19:53" },
+            { role: "user", text: "换！我就要#05枫叶红", time: "19:54" },
+            { role: "agent", text: "好的亲，换货工单已创建，今天为您发出#05枫叶红，包裹里附退货面单。", time: "19:56" },
+          ],
+          emotion: "不满已缓和", risk: "需立即复核", status: "数据不一致", alert: true,
+          summary: "用户只接受 #05枫叶红，但换货工单登记的发出商品仍是 #01赤茶红，可能再次发错。",
+          nextSteps: [
+            ["先暂停确认话术", "在核对清楚前，不要告诉用户换货已经无误。", true],
+            ["核对实际补发色号", "聊天要 #05枫叶红，工单却登记 #01赤茶红。", true],
+            ["确认后再联系用户", "若已再次错发，立即拦截物流并重新补发。"],
+          ],
+          knownFacts: [
+            ["用户购买 #05枫叶红", "原订单商品为测试丝绒唇釉 #05枫叶红。"],
+            ["仓库首次错发 #01", "用户已上传底标照片，客服已确认错发。"],
+            ["用户明确拒绝补偿方案", "用户选择换货，并再次强调只要 #05枫叶红。"],
+          ],
+          journey: [
+            ["4月27日 19:44", "用户下单 #05枫叶红。"],
+            ["5月5日 19:51", "用户上传底标照片，证明收到 #01赤茶红。"],
+            ["5月5日 19:54", "用户明确选择换货，只接受 #05枫叶红。"],
+            ["5月5日 20:38", "换货工单创建，但发出商品登记为 #01赤茶红。"],
+          ],
+          progress: [
+            ["已确认", "仓库首次错发色号。"],
+            ["有冲突", "聊天中的目标色号与换货工单商品不一致。"],
+            ["待人工复核", "需要确认实际包裹 SKU，避免二次错发。"],
+          ],
+          ticket: { id: "BH697811247059", status: "已完结 · 有冲突", type: "错发色号换货", tracking: "申通 773778741362921", owner: "B12" },
+          followup: "必须跟进。工单虽然显示已完结，但补发商品与用户明确诉求冲突，不能直接关闭服务。",
+          followupState: "high", actionLabel: "立即核对补发商品", actionTone: "",
+          replyTags: ["先核对", "避免二次错发", "暂不承诺"],
+          reply: "抱歉让您久等了。我在核对换货记录时发现色号登记可能有误，为避免再次发错，我正在优先确认实际补发商品。确认是 #05枫叶红后我会第一时间把结果和物流进度同步给您。",
+          shortReply: "抱歉，我发现换货记录中的色号可能有误，正在优先核对实际补发商品，确认后马上同步给您。",
+          actionToast: "已发起复核：请确认实际补发色号后再回复用户",
+        },
+        {
+          id: "S00082", name: "方b**", initial: "方", avatar: "#668f82", channel: "天猫", time: "19:25", unread: 1,
+          preview: "好的，那我先停用观察，谢谢", product: "测试修护精华双支装30ml*2", price: "¥799", productCode: "SER",
+          orderId: "6920505423981949613", orderStatus: "交易成功", logistics: "顺丰 SF1678898618989",
+          messages: [
+            { role: "user", text: "你好，我用了精华以后全脸发红，还起了小疹子，有点痒，怎么回事啊，麻烦了", time: "19:12" },
+            { role: "agent", text: "亲先别慌，请先立即停用产品，用清水洁面，暂时不要叠加其他护肤品。方便说下用后多久出现不适的吗？", time: "19:14" },
+            { role: "user", text: "当晚就有点刺，第二天更明显了", time: "19:15" },
+            { role: "agent", text: "再确认几个信息：您的年龄和肤质？最近一周有没有用新的其他产品或做医美项目？", time: "19:17" },
+            { role: "user", text: "32岁，干性肌肤，之前皮肤挺稳定的，最近没换别的东西也没做医美呀", time: "19:18" },
+            { role: "agent", text: "已为您登记不良反应记录单，专员会在24小时内回访跟进。若持续加重或范围扩大请及时就医。", time: "19:21" },
+          ],
+          emotion: "担心", risk: "高风险", status: "待专员处理", alert: true,
+          summary: "用户使用精华后出现全脸发红、疹子和瘙痒，需要停止普通售后话术并由专员持续跟进。",
+          nextSteps: [
+            ["立即交给专业团队", "不做原因判断，不建议继续尝试产品。", true],
+            ["不要重复追问", "年龄、肤质、出现时间、是否停用等信息已登记。"],
+            ["锁定 24 小时回访", "若症状加重，明确建议用户及时就医。", true],
+          ],
+          knownFacts: [
+            ["症状信息已完整", "全脸发红、起小疹子并伴有瘙痒。"],
+            ["出现时间已确认", "使用约 8 小时后出现，第二天更明显。"],
+            ["个人情况已登记", "32 岁、干性肌肤、近期无新产品或医美项目、已暂时停用。"],
+          ],
+          journey: [
+            ["4月24日 11:03", "用户下单测试修护精华双支装。"],
+            ["5月8日 19:12", "用户首次反馈全脸发红、疹子和瘙痒。"],
+            ["5月8日 19:18", "用户补充肤质、出现时间和近期使用情况。"],
+            ["5月8日 19:27", "不良反应工单创建，当前待处理。"],
+          ],
+          progress: [
+            ["已登记", "症状、肤质、使用时间与停用状态已记录。"],
+            ["待处理", "不良反应工单等待专业人员接手。"],
+            ["需回访", "承诺 24 小时内回访，尚未完成。"],
+          ],
+          ticket: { id: "BLFY70604980", status: "待处理", type: "不良反应", tracking: "产品批次 26C14", owner: "G003" },
+          followup: "必须跟进。专员需要在 24 小时内回访；如用户反馈症状加重，应提示及时就医。",
+          followupState: "high", actionLabel: "立即升级专业团队", actionTone: "",
+          replyTags: ["先关心用户", "不做诊断", "明确回访"],
+          reply: "理解您现在会担心。您提供的情况我已经完整记录，不需要再重复说明；这边会立即交给专业团队，并在 24 小时内回访。请先不要继续使用这款产品，如果症状加重或范围扩大，请及时就医。",
+          shortReply: "您的情况已经完整记录，我们会立即交给专业团队并在 24 小时内回访。请先停用，如症状加重请及时就医。",
+          actionToast: "已升级专业团队，并锁定 24 小时回访提醒",
+        },
+      ];
+
+      const requestedCase = new URL(window.location.href).searchParams.get("case");
+      let activeId = conversations.some(item => item.id === requestedCase) ? requestedCase : "S00001";
+
+      function activeConversation() { return conversations.find(item => item.id === activeId); }
+
+      function updateUrlState(panel = document.querySelector(".copilot-tab.active")?.dataset.panel || "assist") {
+        const url = new URL(window.location.href);
+        url.searchParams.set("case", activeId);
+        url.hash = panel;
+        window.history.replaceState(null, "", url);
+      }
+
+      function refreshIcons() {
+        if (!window.lucide) return;
+        window.lucide.createIcons();
+        document.querySelectorAll("svg.lucide").forEach(icon => {
+          icon.setAttribute("aria-hidden", "true");
+          icon.setAttribute("focusable", "false");
+        });
+      }
+
+      function renderConversationList(filter = "") {
+        const target = document.querySelector("#conversationList");
+        target.innerHTML = "";
+        const matches = conversations.filter(item => (item.name + item.preview).includes(filter));
+        if (!matches.length) {
+          target.innerHTML = `<div class="empty-state" role="status">没有找到相关会话，请尝试搜索昵称或聊天关键词。</div>`;
+          return;
+        }
+        matches.forEach(item => {
+          const button = document.createElement("button");
+          button.className = "conversation-item" + (item.id === activeId ? " active" : "");
+          button.type = "button";
+          button.setAttribute("aria-pressed", String(item.id === activeId));
+          button.setAttribute("aria-label", `${item.name}，${item.preview}`);
+          button.innerHTML = `<span class="customer-avatar" style="--avatar:${item.avatar}">${item.initial}</span><span class="conversation-copy"><span class="conversation-name">${item.name}<span>${item.channel}</span></span><span class="conversation-preview">${item.preview}</span></span><span class="conversation-meta">${item.time}${item.unread ? `<span class="unread">${item.unread}</span>` : ""}</span>`;
+          button.addEventListener("click", () => { activeId = item.id; renderAll(); updateUrlState(); });
+          target.appendChild(button);
+        });
+      }
+
+      function renderChat() {
+        const item = activeConversation();
+        const avatar = document.querySelector("#chatAvatar");
+        avatar.textContent = item.initial;
+        avatar.style.setProperty("--avatar", item.avatar);
+        document.querySelector("#chatName").textContent = item.name;
+        document.querySelector("#chatStatus").textContent = `● 在线 · ${item.channel}`;
+        const feed = document.querySelector("#chatFeed");
+        feed.innerHTML = `<div class="system-time">赛题官方数据 · 已关联聊天、订单与售后工单</div><div class="order-card"><div class="order-label"><span>关联订单 ${item.orderId}</span><strong>${item.orderStatus}</strong></div><div class="product-row"><div class="product-thumb">${item.productCode}</div><div class="product-copy"><strong>${item.product}</strong><span>${item.logistics}</span></div><div class="price">${item.price}</div></div></div>`;
+        item.messages.forEach(message => appendBubble(message, false));
+        feed.scrollTop = feed.scrollHeight;
+      }
+
+      function appendBubble(message, scroll = true) {
+        const feed = document.querySelector("#chatFeed");
+        const row = document.createElement("div");
+        row.className = "bubble-row " + (message.role === "agent" ? "agent" : "user");
+        const messageBody = message.type === "image"
+          ? `<div class="image-attachment"><div class="image-placeholder"><i data-lucide="image"></i></div><div class="image-copy"><strong>${message.imageLabel}</strong><span>${message.text}</span></div></div>`
+          : `<div>${message.text}</div>`;
+        const bubble = `<div class="bubble">${messageBody}<div class="bubble-time">${message.time || new Date().toLocaleTimeString("zh-CN", {hour:"2-digit", minute:"2-digit"})}</div></div>`;
+        row.innerHTML = message.role === "agent" ? bubble + `<div class="bubble-avatar">林</div>` : `<div class="bubble-avatar">${activeConversation().initial}</div>` + bubble;
+        feed.appendChild(row);
+        refreshIcons();
+        if (scroll) feed.scrollTop = feed.scrollHeight;
+      }
+
+      function renderPlainRows(rows) {
+        return rows.map(row => `<div class="plain-row${row[2] ? " warning" : ""}"><div class="plain-row-icon"><i data-lucide="${row[2] ? "triangle-alert" : "check"}"></i></div><div class="plain-row-copy"><strong>${row[0]}</strong><span>${row[1]}</span></div></div>`).join("");
+      }
+
+      function renderTimeline(rows) {
+        return rows.map((row, index) => `<div class="trace-step"><div class="trace-index">${index + 1}</div><div class="trace-copy"><strong>${row[0]}</strong><span>${row[1]}</span></div></div>`).join("");
+      }
+
+      function renderCopilot() {
+        const item = activeConversation();
+        document.querySelector("#signalEmotion").textContent = item.emotion;
+        document.querySelector("#signalRisk").textContent = item.risk;
+        document.querySelector("#signalStatus").textContent = item.status;
+        const summary = document.querySelector("#needSummary");
+        summary.className = "summary-callout" + (item.alert ? " alert" : "");
+        summary.innerHTML = `<i data-lucide="${item.alert ? "triangle-alert" : "message-circle-heart"}"></i><span>${item.summary}</span>`;
+        document.querySelector("#nextStepCount").textContent = item.nextSteps.length + " 步";
+        document.querySelector("#nextSteps").innerHTML = renderPlainRows(item.nextSteps);
+        document.querySelector("#suggestedReply").textContent = item.reply;
+        document.querySelector("#replyTags").innerHTML = item.replyTags.map((tag, index) => `<span class="chip${index === 0 ? " blue" : ""}">${tag}</span>`).join("");
+        document.querySelector("#journeyTimeline").innerHTML = renderTimeline(item.journey);
+        document.querySelector("#knownFacts").innerHTML = renderPlainRows(item.knownFacts);
+        const ticketStatus = document.querySelector("#ticketStatus");
+        ticketStatus.textContent = item.ticket.status;
+        ticketStatus.className = "status-pill" + (item.followupState === "high" ? " danger" : item.followupState === "need" ? " warn" : "");
+        document.querySelector("#ticketBox").innerHTML = [
+          ["工单号", item.ticket.id], ["类型", item.ticket.type], ["物流 / 批次", item.ticket.tracking], ["当前处理人", item.ticket.owner],
+        ].map(field => `<div class="ticket-field"><small>${field[0]}</small><strong>${field[1]}</strong></div>`).join("");
+        document.querySelector("#progressTimeline").innerHTML = renderTimeline(item.progress);
+        const followupBadge = document.querySelector("#followupBadge");
+        followupBadge.textContent = item.followupState === "high" ? "必须" : item.followupState === "need" ? "需要" : "无需";
+        followupBadge.className = "status-pill" + (item.followupState === "high" ? " danger" : item.followupState === "need" ? " warn" : "");
+        const followupSummary = document.querySelector("#followupSummary");
+        followupSummary.className = "summary-callout" + (item.followupState === "high" ? " alert" : "");
+        followupSummary.innerHTML = `<i data-lucide="${item.followupState === "high" ? "bell-ring" : "calendar-clock"}"></i><span>${item.followup}</span>`;
+        [document.querySelector("#createTicket"), document.querySelector("#followupAction")].forEach(button => {
+          button.textContent = item.actionLabel;
+          button.className = "risk-action " + item.actionTone;
+        });
+        refreshIcons();
+      }
+
+      function renderAll() { renderConversationList(document.querySelector("#searchInput").value.trim()); renderChat(); renderCopilot(); }
+
+      function showToast(text) {
+        document.querySelector("#toastText").textContent = text;
+        const toast = document.querySelector("#toast");
+        toast.classList.add("show");
+        clearTimeout(showToast.timer);
+        showToast.timer = setTimeout(() => toast.classList.remove("show"), 2200);
+      }
+
+      function sendReply() {
+        const input = document.querySelector("#replyInput");
+        const text = input.value.trim();
+        if (!text) { showToast("请先输入回复内容"); return; }
+        appendBubble({ role:"agent", text });
+        input.value = "";
+        showToast("回复已发送，助手将继续跟进本次服务");
+      }
+
+      document.querySelector("#searchInput").addEventListener("input", event => renderConversationList(event.target.value.trim()));
+      document.querySelector("#insertReply").addEventListener("click", () => {
+        document.querySelector("#replyInput").value = document.querySelector("#suggestedReply").textContent.trim();
+        document.querySelector("#replyInput").focus();
+        showToast("建议已插入，发送前可编辑");
+      });
+      document.querySelector("#regenerateReply").addEventListener("click", () => {
+        document.querySelector("#suggestedReply").textContent = activeConversation().shortReply;
+        showToast("已改成更简洁的说法");
+      });
+      document.querySelector("#sendReply").addEventListener("click", sendReply);
+      document.querySelector("#replyInput").addEventListener("keydown", event => {
+        if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); sendReply(); }
+      });
+      document.querySelector("#createTicket").addEventListener("click", () => showToast(activeConversation().actionToast));
+      document.querySelector("#followupAction").addEventListener("click", () => showToast(activeConversation().actionToast));
+      document.querySelector("#closeConversation").addEventListener("click", () => showToast("会话已移入稍后处理"));
+      document.querySelectorAll(".copilot-tab").forEach(tab => tab.addEventListener("click", () => {
+        document.querySelectorAll(".copilot-tab").forEach(item => {
+          item.classList.remove("active");
+          item.setAttribute("aria-selected", "false");
+          item.tabIndex = -1;
+        });
+        document.querySelectorAll(".copilot-panel").forEach(item => {
+          item.classList.remove("active");
+          item.hidden = true;
+        });
+        tab.classList.add("active");
+        tab.setAttribute("aria-selected", "true");
+        tab.tabIndex = 0;
+        const panel = document.querySelector("#panel-" + tab.dataset.panel);
+        panel.hidden = false;
+        panel.classList.add("active");
+        updateUrlState(tab.dataset.panel);
+      }));
+      document.querySelector(".copilot-tabs").addEventListener("keydown", event => {
+        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+        const tabs = [...document.querySelectorAll(".copilot-tab")];
+        const current = tabs.indexOf(document.activeElement);
+        if (current < 0) return;
+        event.preventDefault();
+        const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+        tabs[next].focus();
+        tabs[next].click();
+      });
+      document.querySelectorAll(".channel").forEach(channel => channel.addEventListener("click", () => {
+        document.querySelectorAll(".channel").forEach(item => item.classList.remove("active")); channel.classList.add("active"); showToast("已切换数据渠道");
+      }));
+
+      renderAll();
+      refreshIcons();
+      const initialPanel = window.location.hash.replace("#", "");
+      const initialTab = document.querySelector(`.copilot-tab[data-panel="${initialPanel}"]`);
+      if (initialTab && initialPanel !== "assist") initialTab.click();
+      else updateUrlState("assist");
+    </script>
+    <script src="/static/app.js?v=20260909-4"></script>
+  </body>
+</html>

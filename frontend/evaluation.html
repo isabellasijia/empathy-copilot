@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f5f5f7" />
+    <title>共情双舱 · 效果评测</title>
+    <script src="/static/lucide.min.js"></script>
+    <link rel="stylesheet" href="/static/evaluation.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#evaluationMain">跳到评测内容</a>
+    <header class="evaluation-header">
+      <a class="brand" href="/?case=S00018" aria-label="返回客服工作台">
+        <span class="brand-icon" aria-hidden="true"><i data-lucide="sparkles"></i></span>
+        <span><strong>共情双舱</strong><small>效果评测</small></span>
+      </a>
+      <div class="header-actions">
+        <span class="model-status" id="evaluationModel"><i data-lucide="circle"></i>连接中…</span>
+        <button class="icon-button" id="refreshEvaluation" type="button" aria-label="刷新评测结果" title="刷新"><i data-lucide="refresh-cw"></i></button>
+        <a class="back-link" href="/?case=S00018"><i data-lucide="arrow-left"></i>返回服务台</a>
+      </div>
+    </header>
+
+    <main class="evaluation-main" id="evaluationMain" tabindex="-1">
+      <header class="page-heading">
+        <div><span>可复算结果</span><h1>Agent 效果与运行成本</h1></div>
+        <p>基于官方 MOCK 业务数据与可重放安全场景。</p>
+      </header>
+
+      <section class="metric-grid" aria-label="评测指标">
+        <article class="metric"><small>回归通过</small><strong id="metricPass">…</strong><span id="metricPassMeta">正在计算</span></article>
+        <article class="metric"><small>意图与情绪</small><strong id="metricUnderstanding">…</strong><span>固定输入可复算</span></article>
+        <article class="metric"><small>风险与回复安全</small><strong id="metricSafety">…</strong><span>关键错误拦截</span></article>
+        <article class="metric"><small>最近一次模型成本</small><strong id="metricTokens">…</strong><span id="metricRunMeta">输入 + 输出 Token</span></article>
+      </section>
+
+      <div class="evaluation-workspace">
+        <section class="results-panel" aria-labelledby="resultsTitle">
+          <div class="section-heading"><div><h2 id="resultsTitle">核心场景回归</h2><p>每条都可用固定输入重放</p></div><span class="pass-badge" id="suiteBadge">计算中</span></div>
+          <div class="result-list" id="evaluationCases" aria-live="polite"><div class="loading-state">正在运行评测…</div></div>
+        </section>
+
+        <aside class="evidence-panel" aria-label="技术与成本证据">
+          <section>
+            <div class="section-heading"><div><h2>模型成本控制</h2><p>保证效果前提下少重复调用</p></div></div>
+            <div class="control-list" id="costControls"></div>
+          </section>
+          <section>
+            <div class="section-heading"><div><h2>按需 Skill 路由</h2><p>调用需要的能力，其余自动跳过</p></div><span class="route-badge" id="routeBadge">读取中</span></div>
+            <div class="skill-trace" id="skillTrace"></div>
+          </section>
+          <section>
+            <div class="section-heading"><div><h2>混排知识召回</h2><p id="ragMethod">正在读取检索策略…</p></div></div>
+            <div class="rag-evidence" id="ragEvidence"></div>
+          </section>
+        </aside>
+      </div>
+
+      <p class="method-note" id="methodNote">评测口径说明正在加载…</p>
+    </main>
+    <script src="/static/evaluation.js?v=20260910-1"></script>
+  </body>
+</html>
