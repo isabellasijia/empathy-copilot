@@ -30,14 +30,14 @@
 
       <section class="metric-grid" aria-label="评测指标">
         <article class="metric"><small>回归通过</small><strong id="metricPass">…</strong><span id="metricPassMeta">正在计算</span></article>
-        <article class="metric"><small>意图与情绪</small><strong id="metricUnderstanding">…</strong><span>固定输入可复算</span></article>
+        <article class="metric"><small>Qwen 意图实测</small><strong id="metricUnderstanding">…</strong><span id="metricUnderstandingMeta">首次运行后缓存</span></article>
         <article class="metric"><small>风险与回复安全</small><strong id="metricSafety">…</strong><span>关键错误拦截</span></article>
         <article class="metric"><small>最近一次模型成本</small><strong id="metricTokens">…</strong><span id="metricRunMeta">输入 + 输出 Token</span></article>
       </section>
 
       <div class="evaluation-workspace">
         <section class="results-panel" aria-labelledby="resultsTitle">
-          <div class="section-heading"><div><h2 id="resultsTitle">核心场景回归</h2><p>每条都可用固定输入重放</p></div><span class="pass-badge" id="suiteBadge">计算中</span></div>
+          <div class="section-heading"><div><h2 id="resultsTitle">6 项评委速览</h2><p>覆盖数据融合、状态修正与复杂意图</p></div><span class="pass-badge" id="suiteBadge">计算中</span></div>
           <div class="result-list" id="evaluationCases" aria-live="polite"><div class="loading-state">正在运行评测…</div></div>
         </section>
 
@@ -59,6 +59,6 @@
 
       <p class="method-note" id="methodNote">评测口径说明正在加载…</p>
     </main>
-    <script src="/static/evaluation.js?v=20260910-1"></script>
+    <script src="/static/evaluation.js?v=20260915-1"></script>
   </body>
 </html>

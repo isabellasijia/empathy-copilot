@@ -54,6 +54,52 @@ IMAGE_EXTENSIONS = {
     "image/webp": ".webp",
 }
 MAX_IMAGE_BYTES = 4 * 1024 * 1024
+ANALYSIS_PIPELINE_VERSION = "2026-09-15-v3"
+MODEL_EVALUATION_VERSION = "2026-09-15-v1"
+MODEL_EVALUATION_CASES = (
+    {
+        "id": "qwen_negation",
+        "text": "我不想退款，只想换一支。",
+        "expected_value": "申请退换货",
+        "expected_category": "补发换货",
+        "expected_clarification": False,
+    },
+    {
+        "id": "qwen_correction",
+        "text": "不是色号问题，是收到的瓶子漏液了。",
+        "expected_value": "处理商品破损",
+        "expected_category": "补发换货",
+        "expected_clarification": False,
+    },
+    {
+        "id": "qwen_ambiguity",
+        "text": "物流和退款分别是什么进度？",
+        "expected_value": "需要进一步确认",
+        "expected_category": "待确认",
+        "expected_clarification": True,
+    },
+    {
+        "id": "qwen_out_of_scope",
+        "text": "帮我写一份周报。",
+        "expected_value": "需要进一步确认",
+        "expected_category": "待确认",
+        "expected_clarification": True,
+    },
+    {
+        "id": "qwen_handoff",
+        "text": "不要机器人了，我要转人工客服。",
+        "expected_value": "需要人工帮助",
+        "expected_category": "转人工",
+        "expected_clarification": False,
+    },
+    {
+        "id": "qwen_unresolved",
+        "text": "谢谢，但问题还是没有解决。",
+        "expected_value": "反馈问题仍未解决",
+        "expected_category": "服务升级",
+        "expected_clarification": False,
+    },
+)
 
 
 class EmpathyService:
@@ -62,6 +108,7 @@ class EmpathyService:
         self.ai = QwenService(settings)
         self._analysis_locks: dict[str, Lock] = {}
         self._analysis_locks_guard = Lock()
+        self._model_evaluation_lock = Lock()
 
     def _analysis_lock(self, session_id: str) -> Lock:
         with self._analysis_locks_guard:
@@ -76,6 +123,21 @@ class EmpathyService:
         report["knowledge_documents"] = load_knowledge(
             self.settings.knowledge_dir, self.settings.database_path
         )
+        cache_version = (
+            f"{ANALYSIS_PIPELINE_VERSION}:"
+            f"{self.settings.qwen_text_model}:{self.settings.qwen_omni_model}"
+        )
+        with database(self.settings.database_path) as connection:
+            current = connection.execute(
+                "SELECT value FROM app_meta WHERE key = 'analysis_cache_version'"
+            ).fetchone()
+            if not current or current["value"] != cache_version:
+                connection.execute("DELETE FROM analysis_cache")
+                connection.execute(
+                    "INSERT OR REPLACE INTO app_meta(key, value) VALUES ('analysis_cache_version', ?)",
+                    (cache_version,),
+                )
+                report["analysis_cache_reset"] = True
         self.seed_derived_records()
         return report
 
@@ -383,6 +445,7 @@ class EmpathyService:
             model_called=self.ai.configured,
             retrieval_count=len(rag_probe),
         )
+        model_evaluation = self._model_evaluation()
 
         return {
             "suite": {
@@ -393,6 +456,7 @@ class EmpathyService:
             },
             "cases": cases,
             "dimensions": dimensions,
+            "model_evaluation": model_evaluation,
             "cost_controls": {
                 "analysis_cache": True,
                 "singleflight_per_session": True,
@@ -431,6 +495,84 @@ class EmpathyService:
             },
             "latest_qwen_run": latest_run,
         }
+
+    def _model_evaluation(self) -> dict[str, Any]:
+        if not self.ai.configured:
+            return {
+                "available": False,
+                "passed": 0,
+                "total": len(MODEL_EVALUATION_CASES),
+                "cases": [],
+            }
+        cache_key = (
+            f"model_evaluation:{MODEL_EVALUATION_VERSION}:"
+            f"{self.settings.qwen_text_model}"
+        )
+        with self._model_evaluation_lock:
+            with database(self.settings.database_path) as connection:
+                cached = connection.execute(
+                    "SELECT value FROM app_meta WHERE key = ?", (cache_key,)
+                ).fetchone()
+            if cached:
+                result = json.loads(cached["value"])
+                result["cached"] = True
+                return result
+
+            inputs = [
+                {"id": item["id"], "text": item["text"]}
+                for item in MODEL_EVALUATION_CASES
+            ]
+            try:
+                response, metadata = self.ai.evaluate_intents(inputs)
+            except Exception as error:
+                return {
+                    "available": True,
+                    "passed": 0,
+                    "total": len(MODEL_EVALUATION_CASES),
+                    "cases": [],
+                    "error": type(error).__name__,
+                }
+
+            outputs = {
+                str(item.get("id")): item
+                for item in response.get("results", [])
+                if isinstance(item, dict) and item.get("id")
+            }
+            cases = []
+            for expected in MODEL_EVALUATION_CASES:
+                actual = outputs.get(expected["id"], {})
+                passed = bool(
+                    actual.get("value") == expected["expected_value"]
+                    and actual.get("category") == expected["expected_category"]
+                    and bool(actual.get("requires_clarification"))
+                    == expected["expected_clarification"]
+                )
+                cases.append(
+                    {
+                        "id": expected["id"],
+                        "text": expected["text"],
+                        "expected": expected["expected_value"],
+                        "actual": actual.get("value") or "无有效输出",
+                        "passed": passed,
+                    }
+                )
+            result = {
+                "available": True,
+                "passed": sum(int(item["passed"]) for item in cases),
+                "total": len(cases),
+                "cases": cases,
+                "model": metadata["model"],
+                "latency_ms": metadata["latency_ms"],
+                "input_tokens": metadata.get("input_tokens"),
+                "output_tokens": metadata.get("output_tokens"),
+                "cached": False,
+            }
+            with database(self.settings.database_path) as connection:
+                connection.execute(
+                    "INSERT OR REPLACE INTO app_meta(key, value) VALUES (?, ?)",
+                    (cache_key, json.dumps(result, ensure_ascii=False)),
+                )
+            return result
 
     def list_conversations(self, search: str = "", limit: int = 80) -> list[dict[str, Any]]:
         search = search.strip()
@@ -596,7 +738,11 @@ class EmpathyService:
         if int(state.get("last_auto_replied_seq") or 0) >= customer_seq:
             return {"status": "already_handled", "service_state": state, "analysis": analysis}
 
-        generated = self.draft(session_id, tone="自然", prefer_fast=True)
+        generated = self.draft(
+            session_id,
+            tone="自然",
+            prefer_fast=is_simple_turn(bundle),
+        )
         sent = self.send(session_id, generated["reply_draft"], "暖心客服")
         if sent.get("status") != "sent":
             state = self.set_service_mode(session_id, "human", "AI 回复需要人工复核")
@@ -694,6 +840,7 @@ class EmpathyService:
         bundle = self.get_bundle(session_id)
         conversation = bundle["conversation"]
         order = bundle.get("order") or {}
+        resolution = deterministic_analysis(bundle)["resolution_state"]
         return {
             "conversation": {
                 "session_id": conversation["session_id"],
@@ -732,6 +879,7 @@ class EmpathyService:
                 "service_mode": bundle["service_state"].get("service_mode", "human"),
                 "handoff_reason": bundle["service_state"].get("handoff_reason"),
             },
+            "resolution_state": resolution,
         }
 
     def _model_context(self, bundle: dict[str, Any]) -> dict[str, Any]:
@@ -1258,10 +1406,20 @@ class EmpathyService:
             else []
         )
         fallback = fallback_reply(bundle, analysis, tone)
-        if not self.ai.configured or prefer_fast:
+        guarded_state = bool(
+            analysis.get("primary_intent", {}).get("requires_clarification")
+            or analysis.get("resolution_state", {}).get("stage") == "已解决"
+        )
+        if not self.ai.configured or prefer_fast or guarded_state:
             return {
                 **fallback,
-                "provider": "local-fast-path" if prefer_fast else fallback.get("provider", "rules"),
+                "provider": (
+                    "rules-guarded"
+                    if guarded_state
+                    else "local-fast-path"
+                    if prefer_fast
+                    else fallback.get("provider", "rules")
+                ),
                 "knowledge": knowledge,
                 "orchestration": build_skill_trace(
                     bundle,
@@ -1382,13 +1540,19 @@ class EmpathyService:
             for issue in model_result.get("issues", []):
                 if isinstance(issue, dict) and issue.get("code"):
                     advisory = dict(issue)
-                    advisory["severity"] = "medium"
+                    advisory["severity"] = (
+                        "high" if advisory.get("severity") == "high" else "medium"
+                    )
                     combined.setdefault(advisory["code"], advisory)
             issues = list(combined.values())
+            model_passed = model_result.get("passed") is not False
             return {
-                "passed": rule_result["passed"],
+                "passed": rule_result["passed"] and model_passed,
                 "issues": issues,
-                "checks": rule_result["checks"],
+                "checks": {
+                    **rule_result["checks"],
+                    "model_review_passed": model_passed,
+                },
                 "suggested_rewrite": model_result.get("suggested_rewrite", ""),
                 **metadata,
                 "orchestration": build_skill_trace(
@@ -1656,6 +1820,17 @@ class EmpathyService:
                                 now,
                             ),
                         )
+        with database(self.settings.database_path) as connection:
+            connection.execute(
+                """
+                UPDATE commitments
+                SET status = '已关闭', updated_at = ?
+                WHERE source_message_id IN (
+                    SELECT message_id FROM messages WHERE source_row > 0
+                )
+                """,
+                (now,),
+            )
 
     def list_risks(self, status: str = "open") -> dict[str, Any]:
         where = "WHERE r.status != '已关闭'" if status == "open" else ""

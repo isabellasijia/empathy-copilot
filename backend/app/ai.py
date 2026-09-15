@@ -170,6 +170,35 @@ class QwenService:
         metadata["task"] = "intent_review"
         return result, metadata
 
+    def evaluate_intents(
+        self, cases: list[dict[str, Any]]
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        system = """
+你是美妆电商客服意图分类评测器。每条输入相互独立，只输出 JSON。
+识别否定、转折、服务完成、问题未解决和转人工。多个平行诉求没有先后，或请求超出客服范围时，输出待确认，不得猜测。
+“不想 A、只想 B”或“不是 A、而是 B”已经明确排除了 A，应选择 B，不属于多意图歧义。
+标签边界：商品本身漏液、碎裂、压坏属于“处理商品破损”；收到错误商品或数量缺少才属于“处理错发漏发”。
+输出：{"results":[{"id":"","value":"","category":"","requires_clarification":false}]}。
+value 和 category 必须来自 intent_catalog；无法判断时 value=需要进一步确认、category=待确认、requires_clarification=true。
+""".strip()
+        result, metadata = self._request_json(
+            system,
+            {
+                "cases": cases,
+                "intent_catalog": [
+                    *intent_catalog(),
+                    {"category": "转人工", "value": "需要人工帮助"},
+                    {"category": "服务确认", "value": "确认问题已解决"},
+                    {"category": "待确认", "value": "需要进一步确认"},
+                ],
+            },
+            max_tokens=700,
+            model=self.settings.qwen_text_model,
+        )
+        if isinstance(result, list):
+            result = {"results": result}
+        return result, metadata
+
     def analyze(
         self,
         context: dict[str, Any],

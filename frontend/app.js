@@ -18,6 +18,9 @@ const state = {
   draftedVersions: new Set(),
   refinementTimer: null,
   unreadTotal: 0,
+  loadSequence: 0,
+  inboxView: "all",
+  snoozedIds: new Set(),
 };
 
 const tones = ["自然", "简洁", "更关心"];
@@ -182,14 +185,20 @@ function renderSystemState() {
 function renderConversationList(filter = "") {
   const target = document.querySelector("#conversationList");
   const normalized = filter.trim().toLowerCase();
-  const items = state.conversations.filter((item) =>
-    [item.session_id, item.buyer_nickname, item.scene_minor, item.preview]
+  const resolvedPattern = /(问题已经解决|已经收到正确商品|确认没问题|没问题了)/;
+  const items = state.conversations.filter((item) => {
+    const matchesSearch = [item.session_id, item.buyer_nickname, item.scene_minor, item.preview]
       .join(" ")
       .toLowerCase()
-      .includes(normalized),
-  );
-  document.querySelector(".conversation-summary strong").textContent = `重点会话 ${items.length}`;
-  document.querySelector(".conversation-summary span").textContent = "4 类关键场景";
+      .includes(normalized);
+    if (!matchesSearch) return false;
+    if (state.inboxView === "later") return state.snoozedIds.has(item.session_id);
+    if (state.inboxView === "completed") return resolvedPattern.test(item.preview || "");
+    return !state.snoozedIds.has(item.session_id);
+  });
+  const viewLabels = { all: "重点会话", later: "稍后处理", completed: "已完成" };
+  document.querySelector(".conversation-summary strong").textContent = `${viewLabels[state.inboxView] || "重点会话"} ${items.length}`;
+  document.querySelector(".conversation-summary span").textContent = state.inboxView === "all" ? "4 类关键场景" : "演示会话";
   if (!items.length) {
     target.innerHTML = '<div class="empty-state" role="status">没有找到相关会话，请尝试搜索会话号或问题类型。</div>';
     return;
@@ -222,6 +231,7 @@ function renderChat(bundle) {
   document.querySelector("#chatStatus").textContent = `● 在线 · ${conversation.session_id}`;
   const serviceState = bundle.service_state || {};
   const serviceButton = document.querySelector("#serviceModeButton");
+  serviceButton.disabled = false;
   const isAi = serviceState.service_mode === "ai";
   serviceButton.className = `service-mode-button ${isAi ? "ai" : serviceState.handoff_reason ? "handoff" : "human"}`;
   serviceButton.innerHTML = `<i data-lucide="${isAi ? "bot" : "headset"}"></i><span>${isAi ? "AI 接待中" : "人工接待中"}</span>`;
@@ -277,7 +287,9 @@ function renderCopilot(payload) {
   document.querySelector("#signalEmotion").classList.toggle("escalated", emotionEscalated);
   document.querySelector("#signalEmotionIcon").textContent = emotionIcons[emotion] || "💬";
   document.querySelector("#signalRisk").textContent = riskLabels[analysis.risk_level] || "需关注";
-  document.querySelector("#signalStatus").textContent = analysis.primary_intent?.value || "待确认";
+  const needsClarification = Boolean(analysis.primary_intent?.requires_clarification);
+  const intentLabel = needsClarification ? "需要确认" : analysis.primary_intent?.value || "待确认";
+  document.querySelector("#signalStatus").textContent = intentLabel;
   const resolution = analysis.resolution_state || {};
   const resolutionScore = Math.max(0, Math.min(Number(resolution.score) || 0, 100));
   document.querySelector("#resolutionStage").textContent = resolution.stage || "待确认";
@@ -291,7 +303,17 @@ function renderCopilot(payload) {
   const aiModeBadge = document.querySelector("#aiModeBadge");
   aiModeBadge.title = run.provider?.startsWith("qwen")
     ? "会话状态已更新"
-    : "基础保障中";
+    : state.health?.ai?.configured
+      ? "快速分析已完成"
+      : "基础保障中";
+
+  if (resolution.stage === "已解决") {
+    const serviceButton = document.querySelector("#serviceModeButton");
+    serviceButton.className = "service-mode-button resolved";
+    serviceButton.innerHTML = '<i data-lucide="circle-check"></i><span>服务已完成</span>';
+    serviceButton.title = "客户已确认问题解决";
+    serviceButton.disabled = true;
+  }
 
   const summary = document.querySelector("#needSummary");
   summary.className = `summary-callout${analysis.risk_level === "high" ? " alert" : ""}`;
@@ -299,7 +321,7 @@ function renderCopilot(payload) {
 
   const secondary = (analysis.secondary_intents || []).map((item) => item.value).join("、") || "暂无";
   document.querySelector("#intentDetails").innerHTML = `
-    <div><small>当前问题</small><strong>${escapeHtml(analysis.primary_intent?.value)}</strong></div>
+    <div><small>当前问题</small><strong>${escapeHtml(intentLabel)}</strong></div>
     <div><small>同时关注</small><strong>${escapeHtml(secondary)}</strong></div>`;
 
   const visualObservations = analysis.visual_observations || [];
@@ -558,6 +580,7 @@ async function switchServiceMode() {
 }
 
 async function loadConversation(sessionId, force = false) {
+  const loadId = ++state.loadSequence;
   state.conversationLoading = true;
   state.activeId = sessionId;
   renderConversationList(document.querySelector("#searchInput").value);
@@ -568,13 +591,10 @@ async function loadConversation(sessionId, force = false) {
           body: JSON.stringify({ force: true }),
         })
       : await api(`/api/conversations/${encodeURIComponent(sessionId)}`);
-    if (force) {
-      const previousDraft = state.current?.draft;
-      state.current = { ...payload, draft: previousDraft || { reply_draft: "分析已更新，点击「换一种说法」生成新回复。", tags: [], provider: "local" } };
-    } else {
-      state.current = payload;
-    }
+    if (loadId !== state.loadSequence || state.activeId !== sessionId) return;
+    state.current = payload;
     state.activeVersion = bundleVersion(state.current.bundle);
+    if (force) state.draftedVersions.delete(`${sessionId}:${state.activeVersion}`);
     renderChat(state.current.bundle);
     renderCopilot(state.current);
     updateUrl();
@@ -585,9 +605,10 @@ async function loadConversation(sessionId, force = false) {
       void refreshDynamicDraft(state.activeId, state.activeVersion);
     }
   } catch (error) {
+    if (loadId !== state.loadSequence) return;
     showToast(error.message, "circle-alert");
   } finally {
-    state.conversationLoading = false;
+    if (loadId === state.loadSequence) state.conversationLoading = false;
   }
 }
 
@@ -601,11 +622,13 @@ async function pollStaffConversation() {
   ) return;
 
   state.pollBusy = true;
+  const polledSessionId = state.activeId;
   try {
     const [payload, summaries] = await Promise.all([
-      api(`/api/conversations/${encodeURIComponent(state.activeId)}/bundle`),
+      api(`/api/conversations/${encodeURIComponent(polledSessionId)}/bundle`),
       api("/api/conversations?limit=200"),
     ]);
+    if (state.activeId !== polledSessionId) return;
     state.conversations = decorateShowcaseConversations(summaries.items);
     renderConversationList(document.querySelector("#searchInput").value);
     updateUnreadIndicators();
@@ -635,11 +658,14 @@ async function regenerateReply() {
   setLoading(button, true);
   const tone = tones[state.draftToneIndex % tones.length];
   state.draftToneIndex += 1;
+  const sessionId = state.activeId;
+  const version = state.activeVersion;
   try {
-    const draft = await api(`/api/conversations/${encodeURIComponent(state.activeId)}/draft`, {
+    const draft = await api(`/api/conversations/${encodeURIComponent(sessionId)}/draft`, {
       method: "POST",
       body: JSON.stringify({ tone }),
     });
+    if (state.activeId !== sessionId || state.activeVersion !== version) return;
     state.current.draft = draft;
     document.querySelector("#suggestedReply").textContent = draft.reply_draft;
     document.querySelector("#replyTags").innerHTML = (draft.tags || []).slice(0, 2)
@@ -670,6 +696,7 @@ async function sendReply() {
   const input = document.querySelector("#replyInput");
   const button = document.querySelector("#sendReply");
   const text = input.value.trim();
+  const sessionId = state.activeId;
   if (!text) {
     showToast("请先输入回复内容", "circle-alert");
     return;
@@ -677,7 +704,7 @@ async function sendReply() {
   setLoading(button, true);
   document.querySelector("#qualityStrip").hidden = true;
   try {
-    const result = await api(`/api/conversations/${encodeURIComponent(state.activeId)}/send`, {
+    const result = await api(`/api/conversations/${encodeURIComponent(sessionId)}/send`, {
       method: "POST",
       body: JSON.stringify({ text, actor: "林小稚" }),
     });
@@ -686,8 +713,9 @@ async function sendReply() {
       showToast("已拦截需要复核的回复", "shield-alert");
       return;
     }
+    if (state.activeId !== sessionId) return;
     input.value = "";
-    await loadConversation(state.activeId);
+    await loadConversation(sessionId);
     showToast("回复已通过检查并发送");
   } catch (error) {
     showToast(error.message, "circle-alert");
@@ -876,6 +904,7 @@ function setupTabs() {
 
 function setupEvents() {
   setupTabs();
+  const openPanel = (panel) => document.querySelector(`.copilot-tab[data-panel="${panel}"]`)?.click();
   document.addEventListener("click", (event) => {
     const conversation = event.target.closest("[data-session-id]");
     if (conversation && !conversation.id?.includes("openRiskConversation")) {
@@ -930,6 +959,43 @@ function setupEvents() {
     document.querySelector("#qualityStrip").hidden = true;
   });
   document.querySelector("#serviceNav").addEventListener("click", () => setView("service"));
+  document.querySelector("#customerNav").addEventListener("click", () => {
+    setView("service");
+    openPanel("journey");
+  });
+  document.querySelector("#ticketNav").addEventListener("click", () => {
+    setView("service");
+    openPanel("progress");
+  });
+  document.querySelector("#customerProfileButton").addEventListener("click", () => openPanel("journey"));
+  document.querySelector("#orderHistoryButton").addEventListener("click", () => openPanel("progress"));
+  document.querySelector("#settingsTool").addEventListener("click", () => openPanel("trace"));
+  document.querySelector("#globalSearch").addEventListener("click", () => document.querySelector("#searchInput").focus());
+  document.querySelector("#notificationTool").addEventListener("click", () => document.querySelector("#messageNav").click());
+  document.querySelector("#knowledgeButton").addEventListener("click", () => openPanel("journey"));
+  document.querySelector("#quickReplyButton").addEventListener("click", () => document.querySelector("#insertReply").click());
+  document.querySelector("#emojiButton").addEventListener("click", () => {
+    const input = document.querySelector("#replyInput");
+    const start = input.selectionStart ?? input.value.length;
+    input.setRangeText("🙂", start, input.selectionEnd ?? start, "end");
+    input.focus();
+  });
+  document.querySelectorAll("[data-inbox-view]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const view = button.dataset.inboxView;
+      if (view === "members") {
+        showToast("当前接待客服：林小稚");
+        return;
+      }
+      state.inboxView = view;
+      document.querySelectorAll("[data-inbox-view]").forEach((item) => {
+        const active = item.dataset.inboxView === view;
+        item.classList.toggle("active", active);
+        item.setAttribute("aria-pressed", String(active));
+      });
+      renderConversationList(document.querySelector("#searchInput").value);
+    });
+  });
   document.querySelector("#riskNav").addEventListener("click", () => setView("risk"));
   document.querySelector("#backToService").addEventListener("click", () => setView("service"));
   document.querySelector("#refreshRisks").addEventListener("click", loadRisks);
@@ -961,7 +1027,11 @@ function setupEvents() {
   [document.querySelector("#createTicket"), document.querySelector("#followupAction")].forEach((button) =>
     button.addEventListener("click", () => setView("risk")),
   );
-  document.querySelector("#closeConversation").addEventListener("click", () => showToast("会话已移入稍后处理"));
+  document.querySelector("#closeConversation").addEventListener("click", () => {
+    state.snoozedIds.add(state.activeId);
+    document.querySelector('[data-inbox-view="later"]').click();
+    showToast("会话已移入稍后处理");
+  });
   document.querySelector("#closeEvidence").addEventListener("click", () => document.querySelector("#evidenceDialog").close());
   document.querySelector("#evidenceDialog").addEventListener("click", (event) => {
     if (event.target === event.currentTarget) event.currentTarget.close();

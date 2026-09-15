@@ -54,7 +54,7 @@ def _not_found(kind: str, identifier: str | int) -> HTTPException:
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
-    return {"status": "ok", "startup": startup_report, **service.stats()}
+    return {**service.stats(), "status": "ok", "startup": startup_report}
 
 
 @app.get("/api/evaluation")
@@ -94,7 +94,11 @@ def conversation_bundle(session_id: str) -> dict[str, Any]:
 @app.post("/api/conversations/{session_id}/analyze")
 def analyze(session_id: str, request: AnalyzeRequest) -> dict[str, Any]:
     try:
-        return service.analyze(session_id, force=request.force)
+        result = service.analyze(session_id, force=request.force)
+        return {
+            **result,
+            "draft": fallback_reply(result["bundle"], result["analysis"]),
+        }
     except KeyError:
         raise _not_found("会话", session_id)
 

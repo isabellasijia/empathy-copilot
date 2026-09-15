@@ -775,8 +775,8 @@
         <nav class="rail-nav" aria-label="工作台功能">
           <button class="rail-item active" id="serviceNav" type="button" aria-current="page"><i data-lucide="messages-square"></i><span>服务台</span></button>
           <button class="rail-item" id="messageNav" type="button"><i data-lucide="bell"></i><span>消息</span><span class="badge" id="messageBadge" hidden>0</span></button>
-          <button class="rail-item" type="button"><i data-lucide="contact-round"></i><span>客户</span></button>
-          <button class="rail-item" type="button"><i data-lucide="clipboard-list"></i><span>工单</span></button>
+          <button class="rail-item" id="customerNav" type="button"><i data-lucide="contact-round"></i><span>客户</span></button>
+          <button class="rail-item" id="ticketNav" type="button"><i data-lucide="clipboard-list"></i><span>工单</span></button>
           <button class="rail-item" id="riskNav" type="button"><i data-lucide="shield-alert"></i><span>风险台</span><span class="badge" id="riskBadge">0</span></button>
         </nav>
         <div class="rail-spacer"></div>
@@ -796,9 +796,9 @@
         </div>
         <div class="top-tools">
           <div class="agent-state" id="systemState">正在连接服务助手…</div>
-          <button class="top-tool" type="button" title="搜索" aria-label="全局搜索"><i data-lucide="search"></i></button>
-          <button class="top-tool" type="button" title="通知" aria-label="查看通知"><i data-lucide="bell"></i></button>
-          <button class="top-tool" type="button" title="设置" aria-label="打开设置"><i data-lucide="settings"></i></button>
+          <button class="top-tool" id="globalSearch" type="button" title="搜索" aria-label="全局搜索"><i data-lucide="search"></i></button>
+          <button class="top-tool" id="notificationTool" type="button" title="通知" aria-label="查看通知"><i data-lucide="bell"></i></button>
+          <button class="top-tool" id="settingsTool" type="button" title="助手状态" aria-label="查看助手状态"><i data-lucide="settings"></i></button>
         </div>
       </header>
 
@@ -807,10 +807,10 @@
           <div class="search-field"><i data-lucide="search"></i><input id="searchInput" name="conversation-search" type="search" aria-label="搜索客户、订单或聊天内容" autocomplete="off" placeholder="搜索客户、订单、聊天内容…" /></div>
         </div>
         <div class="inbox-tabs" aria-label="会话筛选">
-          <button class="inbox-tab active" type="button" title="进行中" aria-label="查看进行中的会话" aria-pressed="true"><i data-lucide="message-square-more"></i></button>
-          <button class="inbox-tab" type="button" title="稍后处理" aria-label="查看稍后处理的会话" aria-pressed="false"><i data-lucide="clock-3"></i></button>
-          <button class="inbox-tab" type="button" title="已完成" aria-label="查看已完成的会话" aria-pressed="false"><i data-lucide="circle-check-big"></i></button>
-          <button class="inbox-tab" type="button" title="成员" aria-label="查看客服成员" aria-pressed="false"><i data-lucide="users"></i></button>
+          <button class="inbox-tab active" data-inbox-view="all" type="button" title="全部案例" aria-label="查看全部重点案例" aria-pressed="true"><i data-lucide="message-square-more"></i></button>
+          <button class="inbox-tab" data-inbox-view="later" type="button" title="稍后处理" aria-label="查看稍后处理的会话" aria-pressed="false"><i data-lucide="clock-3"></i></button>
+          <button class="inbox-tab" data-inbox-view="completed" type="button" title="已完成" aria-label="查看已完成的会话" aria-pressed="false"><i data-lucide="circle-check-big"></i></button>
+          <button class="inbox-tab" data-inbox-view="members" type="button" title="成员" aria-label="查看客服成员" aria-pressed="false"><i data-lucide="users"></i></button>
         </div>
         <div class="conversation-wrap">
           <div class="conversation-summary"><strong>重点会话 4</strong><span>4 类关键场景</span></div>
@@ -823,9 +823,8 @@
           <div class="chat-person"><div class="customer-avatar" id="chatAvatar" style="--avatar:#c2876d">陈</div><div><strong id="chatName">陈雨桐</strong><span id="chatStatus">● 在线 · 天猫</span></div></div>
           <div class="chat-actions">
             <button class="service-mode-button human" id="serviceModeButton" type="button" title="切换接待方式"><i data-lucide="headset"></i><span>人工接待中</span></button>
-            <button class="chat-action" type="button" title="客户档案" aria-label="查看客户档案"><i data-lucide="contact"></i></button>
-            <button class="chat-action" type="button" title="历史订单" aria-label="查看历史订单"><i data-lucide="receipt-text"></i></button>
-            <button class="chat-action" type="button" title="更多" aria-label="更多会话操作"><i data-lucide="ellipsis"></i></button>
+            <button class="chat-action" id="customerProfileButton" type="button" title="客户档案" aria-label="查看客户档案"><i data-lucide="contact"></i></button>
+            <button class="chat-action" id="orderHistoryButton" type="button" title="处理记录" aria-label="查看处理记录"><i data-lucide="receipt-text"></i></button>
           </div>
         </header>
         <div class="chat-feed" id="chatFeed"></div>
@@ -836,11 +835,9 @@
             <button id="dismissQuality" type="button" aria-label="关闭提示"><i data-lucide="x"></i></button>
           </div>
           <div class="composer-tools">
-            <button class="composer-tool" type="button" title="表情" aria-label="添加表情"><i data-lucide="smile"></i></button>
-            <button class="composer-tool" type="button" title="图片" aria-label="添加图片"><i data-lucide="image"></i></button>
-            <button class="composer-tool" type="button" title="文件" aria-label="添加文件"><i data-lucide="paperclip"></i></button>
-            <button class="composer-tool" type="button" title="知识库" aria-label="打开知识库"><i data-lucide="book-open"></i></button>
-            <button class="composer-tool" type="button" title="快捷话术" aria-label="打开快捷话术"><i data-lucide="messages-square"></i></button>
+            <button class="composer-tool" id="emojiButton" type="button" title="表情" aria-label="添加表情"><i data-lucide="smile"></i></button>
+            <button class="composer-tool" id="knowledgeButton" type="button" title="客户信息" aria-label="查看客户信息"><i data-lucide="book-open"></i></button>
+            <button class="composer-tool" id="quickReplyButton" type="button" title="使用建议回复" aria-label="使用建议回复"><i data-lucide="messages-square"></i></button>
           </div>
           <label class="sr-only" for="replyInput">回复内容</label>
           <textarea id="replyInput" name="reply" autocomplete="off" placeholder="输入回复，或使用右侧建议…"></textarea>

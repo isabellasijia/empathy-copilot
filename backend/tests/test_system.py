@@ -10,7 +10,12 @@ from app.ai import QwenService
 from app.config import Settings
 from app.orchestration import build_service_graph, should_use_understanding_model
 from app.rag import search_knowledge
-from app.rules import deterministic_analysis, fallback_reply, infer_current_intent
+from app.rules import (
+    deterministic_analysis,
+    deterministic_quality_check,
+    fallback_reply,
+    infer_current_intent,
+)
 from app.service import EmpathyService
 
 
@@ -63,6 +68,24 @@ def test_s00082_blocks_diagnostic_reply(service: EmpathyService) -> None:
     )
     assert result["passed"] is False
     assert "medical_claim" in {item["code"] for item in result["issues"]}
+
+
+def test_s00082_blocks_reusing_expired_followup_promise(
+    service: EmpathyService,
+) -> None:
+    result = service.quality_check(
+        "S00082",
+        "请先停用产品，专员会在24小时内回访，情况加重请及时就医。",
+    )
+    assert result["passed"] is False
+    assert "unsupported_timeline" in {item["code"] for item in result["issues"]}
+
+
+def test_s00082_acknowledgement_keeps_safety_intent(service: EmpathyService) -> None:
+    analysis = deterministic_analysis(service.get_bundle("S00082"))
+    assert analysis["primary_intent"]["value"] == "不良反应处理"
+    assert analysis["emotion_state"]["value"] == "平稳"
+    assert "停" in fallback_reply(service.get_bundle("S00082"), analysis)["reply_draft"]
 
 
 def test_s00001_does_not_ask_for_image_twice(service: EmpathyService) -> None:
@@ -209,6 +232,8 @@ def test_evaluation_suite_is_reproducible(service: EmpathyService) -> None:
     assert result["cost_controls"]["singleflight_per_session"] is True
     assert result["cost_controls"]["model_split"].startswith("文本 qwen-turbo")
     assert result["cost_controls"]["parallel_multimodal"] is True
+    assert result["model_evaluation"]["available"] is False
+    assert service.stats()["overdue_commitments"] == 0
 
 
 def test_hybrid_rag_prioritizes_matching_scene(service: EmpathyService) -> None:
@@ -469,6 +494,8 @@ def test_ambiguous_and_out_of_scope_intents_do_not_guess(
     ambiguous = infer_current_intent(bundle)
     assert ambiguous["requires_clarification"] is True
     assert ambiguous["source"] == "latest_turn_ambiguous"
+    assert ambiguous["value"] == "需要进一步确认"
+    assert ambiguous["category"] == "待确认"
 
     bundle["messages"][-1] = {
         **bundle["messages"][-1],
@@ -498,3 +525,62 @@ def test_resolution_questions_and_negations_do_not_close_case(
     analysis = deterministic_analysis(bundle)
     assert analysis["primary_intent"]["category"] != "服务确认"
     assert analysis["resolution_state"]["score"] < 100
+
+
+def test_resolved_case_blocks_reopening_old_workflow(service: EmpathyService) -> None:
+    bundle = service.get_bundle("S00019")
+    bundle["tickets"] = []
+    bundle["messages"] = [
+        *bundle["messages"],
+        {
+            "message_id": "TEST-RESOLVED-GUARD",
+            "role": "customer",
+            "text": "问题已经解决了，没问题了。",
+            "content_type": "text",
+            "sent_at": "2026-09-15T11:00:00",
+        },
+    ]
+    analysis = deterministic_analysis(bundle)
+    checked = deterministic_quality_check(
+        bundle,
+        analysis,
+        "好的，我们正在核对并继续催促换货。",
+    )
+    assert checked["passed"] is False
+    assert "resolved_state_mismatch" in {item["code"] for item in checked["issues"]}
+
+
+def test_model_quality_failure_blocks_send(
+    service: EmpathyService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(service.ai, "client", Mock())
+    monkeypatch.setattr(
+        service.ai,
+        "quality_check",
+        Mock(
+            return_value=(
+                {
+                    "passed": False,
+                    "issues": [
+                        {
+                            "code": "intent_mismatch",
+                            "severity": "high",
+                            "message": "回复与当前诉求不一致。",
+                        }
+                    ],
+                    "suggested_rewrite": "",
+                },
+                {
+                    "provider": "qwen",
+                    "model": "qwen-turbo",
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "latency_ms": 20,
+                },
+            )
+        ),
+    )
+    result = service.quality_check("S00019", "退款事项我们会继续为您核对。")
+    assert result["passed"] is False
+    assert result["checks"]["model_review_passed"] is False
+    assert result["issues"][0]["severity"] == "high"

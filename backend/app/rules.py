@@ -15,7 +15,7 @@ from .intents import (
 SHADE_PATTERN = re.compile(r"#?\s*(\d{2})\s*([\u4e00-\u9fff]{0,6})")
 NEGATIVE_WORDS = ("开啥玩笑", "太离谱", "生气", "不满意", "不开心", "投诉", "差评", "没法用", "走点心", "反复")
 ANGER_WORDS = ("我很生气", "非常生气", "火大", "气死", "忍不了", "不能接受")
-POSITIVE_WORDS = ("很满意", "满意", "很开心", "谢谢", "感谢", "解决了", "处理得很好", "挺好的")
+POSITIVE_WORDS = ("很满意", "满意", "很开心", "解决了", "处理得很好", "挺好的")
 WORRY_WORDS = ("担心", "害怕", "泛红", "疹子", "痒", "刺痛", "不适")
 URGENT_WORDS = ("急", "尽快", "赶紧", "多久", "还没")
 SKIN_PROFILE_TERMS = (
@@ -115,6 +115,21 @@ def infer_current_intent(bundle: dict[str, Any]) -> dict[str, Any]:
                 "slots": latest_slots,
             }
 
+    if conversation.get("scene_major") == "不良反应" and any(
+        phrase in latest_text
+        for phrase in ("先停用", "停止使用", "停用观察", "先观察", "知道了")
+    ):
+        return {
+            "value": "不良反应处理",
+            "category": "不良反应",
+            "confidence": 0.94,
+            "evidence": evidence,
+            "source": "latest_turn",
+            "requires_clarification": False,
+            "candidates": [],
+            "slots": latest_slots,
+        }
+
     candidates = rank_turn_intents(latest_text)
     if _shade(latest_text) and any(
         phrase in latest_text for phrase in ("适合", "显", "要", "来一支", "买", "选")
@@ -128,8 +143,8 @@ def infer_current_intent(bundle: dict[str, Any]) -> dict[str, Any]:
         ambiguous = bool(runner_up and margin < 0.32 and runner_up["category"] != top["category"])
         confidence = min(0.98, 0.76 + top["score"] * 0.1 + max(margin, 0) * 0.08)
         return {
-            "value": top["value"],
-            "category": top["category"],
+            "value": "需要进一步确认" if ambiguous else top["value"],
+            "category": "待确认" if ambiguous else top["category"],
             "confidence": round(0.62 if ambiguous else confidence, 2),
             "evidence": evidence,
             "source": "latest_turn_ambiguous" if ambiguous else "latest_turn",
@@ -325,6 +340,13 @@ def infer_emotion(messages: list[dict[str, Any]]) -> dict[str, Any]:
             "value": "满意",
             "trend": "情绪已缓和",
             "confidence": 0.95,
+            "evidence": evidence_ids[-1:],
+        }
+    if any(word in latest for word in ("好的", "知道了", "收到", "谢谢", "感谢")):
+        return {
+            "value": "平稳",
+            "trend": "情绪已缓和",
+            "confidence": 0.84,
             "evidence": evidence_ids[-1:],
         }
     if any(word in recent for word in NEGATIVE_WORDS):
@@ -858,6 +880,32 @@ def deterministic_quality_check(bundle: dict[str, Any], analysis: dict[str, Any]
     lowered = text.lower()
     conflicts = [item for item in analysis["risk_signals"] if item["type"] == "product_mismatch"]
     has_image = any(message["content_type"] == "image" for message in bundle["messages"] if message["role"] == "customer")
+    active_commitments = [
+        item
+        for item in bundle.get("commitments", [])
+        if item.get("status") != "已关闭"
+    ]
+
+    if re.search(r"\d{1,3}\s*(小时|天)内", text) and not active_commitments:
+        issues.append(
+            {
+                "code": "unsupported_timeline",
+                "severity": "high",
+                "message": "回复包含当前记录无法支持的处理时效。",
+            }
+        )
+
+    if analysis.get("resolution_state", {}).get("stage") == "已解决" and any(
+        term in text
+        for term in ("为您安排换货", "为您补发", "正在核对", "继续催促", "等待补发")
+    ):
+        issues.append(
+            {
+                "code": "resolved_state_mismatch",
+                "severity": "high",
+                "message": "客户已确认问题解决，回复不应重新启动旧处理流程。",
+            }
+        )
 
     if has_image and re.search(r"(再|重新|麻烦).{0,8}(发|提供|上传).{0,8}(图|照片|图片)", text):
         issues.append({"code": "repeat_ask", "severity": "high", "message": "用户已提供图片，不应再次索要。"})
@@ -900,8 +948,8 @@ def deterministic_quality_check(bundle: dict[str, Any], analysis: dict[str, Any]
         "issues": issues,
         "checks": {
             "no_repeat_ask": not any(issue["code"] == "repeat_ask" for issue in issues),
-            "no_wrong_reference": not any(issue["code"] in {"wrong_product", "unresolved_conflict"} for issue in issues),
-            "no_unsupported_promise": not any(issue["code"] in {"unsupported_promise", "medical_claim"} for issue in issues),
+            "no_wrong_reference": not any(issue["code"] in {"wrong_product", "unresolved_conflict", "resolved_state_mismatch"} for issue in issues),
+            "no_unsupported_promise": not any(issue["code"] in {"unsupported_promise", "unsupported_timeline", "medical_claim"} for issue in issues),
             "no_missing_signal": not any(issue["code"] == "missing_safety_action" for issue in issues),
         },
         "provider": "rules",

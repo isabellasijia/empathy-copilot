@@ -107,7 +107,7 @@ function renderConsumerMessages(messages, { announce = false } = {}) {
       const customer = message.role === "customer";
       const body = message.content_type === "image"
         ? message.image_url
-          ? `<span class="message-photo-wrap"><img src="${escapeConsumerHtml(message.image_url)}" alt="用户发送的服务图片" loading="lazy" /><span class="message-photo-caption">${escapeConsumerHtml(message.text || "请帮我看一下这张图片。")}</span></span>`
+          ? `<span class="message-photo-wrap"><img src="${escapeConsumerHtml(message.image_url)}" alt="用户发送的服务图片" width="220" height="220" loading="lazy" /><span class="message-photo-caption">${escapeConsumerHtml(message.text || "请帮我看一下这张图片。")}</span></span>`
           : '<span class="message-image"><i data-lucide="image"></i><span>图片记录（原图未提供）</span></span>'
         : escapeConsumerHtml(message.text);
       return `<div class="consumer-message ${customer ? "customer" : "agent"}">
@@ -128,11 +128,14 @@ function renderConsumer(data, options = {}) {
   document.querySelector("#customerName").textContent = `${data.conversation.buyer_nickname} · 服务单 ${data.conversation.session_id}`;
   document.querySelector("#syncState").textContent = "已连接";
   const aiServing = data.service_state?.service_mode === "ai";
+  const resolved = data.resolution_state?.stage === "已解决";
   document.querySelector("#consumerAgentAvatar").textContent = aiServing ? "AI" : "林";
   document.querySelector("#consumerAgentName").textContent = aiServing ? "暖心客服" : "林小稚";
-  document.querySelector("#deliveryState").textContent = aiServing
-    ? "AI 客服正在接待，需要时会转人工"
-    : "人工客服正在接待";
+  document.querySelector("#deliveryState").textContent = resolved
+    ? "本次服务已完成，如有需要可继续留言"
+    : aiServing
+      ? "AI 客服正在接待，需要时会转人工"
+      : "人工客服正在接待";
   renderConsumerOrder(data.order);
   renderConsumerMessages(data.messages, options);
 }

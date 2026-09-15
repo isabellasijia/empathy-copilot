@@ -28,28 +28,59 @@ function formatInteger(value) {
   return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 }).format(value || 0);
 }
 
+function systemResultRow(item) {
+  return `<div class="result-row">
+    <div class="result-icon"><i data-lucide="${item.passed ? "check" : "x"}"></i></div>
+    <div class="result-copy"><strong>${escapeEvaluationHtml(item.name)}</strong><span>${escapeEvaluationHtml(item.expected)}</span></div>
+    <span class="case-id">${escapeEvaluationHtml(item.dimension)} · ${escapeEvaluationHtml(item.case)}</span>
+    <span class="result-state">${item.passed ? "通过" : "未通过"}</span>
+  </div>`;
+}
+
+function modelResultRow(item) {
+  return `<div class="result-row">
+    <div class="result-icon"><i data-lucide="${item.passed ? "check" : "x"}"></i></div>
+    <div class="result-copy"><strong>${escapeEvaluationHtml(item.text)}</strong><span>预期：${escapeEvaluationHtml(item.expected)} · 实际：${escapeEvaluationHtml(item.actual)}</span></div>
+    <span class="case-id">Qwen 实测</span>
+    <span class="result-state">${item.passed ? "通过" : "未通过"}</span>
+  </div>`;
+}
+
 function renderEvaluation(health, evaluation) {
-  const run = evaluation.latest_qwen_run;
+  const modelEvaluation = evaluation.model_evaluation || {};
+  const run = modelEvaluation.available && modelEvaluation.model ? modelEvaluation : evaluation.latest_qwen_run;
   const dimensions = evaluation.dimensions || {};
   const dimensionTotal = (...names) => names.reduce((sum, name) => sum + (dimensions[name]?.total || 0), 0);
   const dimensionPassed = (...names) => names.reduce((sum, name) => sum + (dimensions[name]?.passed || 0), 0);
   document.querySelector("#evaluationModel").innerHTML = `<i data-lucide="circle"></i>${health.ai.configured ? "Qwen 在线" : "本地保障"}`;
   document.querySelector("#metricPass").textContent = `${evaluation.suite.passed}/${evaluation.suite.total}`;
   document.querySelector("#metricPassMeta").textContent = `${Math.round(evaluation.suite.pass_rate * 100)}% 场景通过`;
-  document.querySelector("#metricUnderstanding").textContent = `${dimensionPassed("意图识别", "情绪判断")}/${dimensionTotal("意图识别", "情绪判断")}`;
+  document.querySelector("#metricUnderstanding").textContent = modelEvaluation.available
+    ? `${modelEvaluation.passed}/${modelEvaluation.total}`
+    : "—";
+  document.querySelector("#metricUnderstandingMeta").textContent = modelEvaluation.available
+    ? `${escapeEvaluationHtml(modelEvaluation.model || health.ai.text_model)} · ${modelEvaluation.cached ? "缓存结果" : "本次实测"}`
+    : "未配置模型";
   document.querySelector("#metricSafety").textContent = `${dimensionPassed("风险识别", "回复安全")}/${dimensionTotal("风险识别", "回复安全")}`;
   document.querySelector("#metricTokens").textContent = run ? formatInteger((run.input_tokens || 0) + (run.output_tokens || 0)) : "—";
   document.querySelector("#metricRunMeta").textContent = run ? `${(run.latency_ms / 1000).toFixed(1)} 秒 · 输入 + 输出` : "等待 Qwen 真实返回";
-  document.querySelector("#suiteBadge").textContent = evaluation.suite.passed === evaluation.suite.total ? "全部通过" : "需要修复";
-  document.querySelector("#methodNote").textContent = evaluation.suite.note;
+  const modelPassed = !modelEvaluation.available || modelEvaluation.passed === modelEvaluation.total;
+  document.querySelector("#suiteBadge").textContent = evaluation.suite.passed === evaluation.suite.total && modelPassed ? "全部通过" : "需要复核";
+  document.querySelector("#methodNote").textContent = `${evaluation.suite.note} Qwen 指标来自独立批量调用，不与本地规则分数混算。`;
 
-  document.querySelector("#evaluationCases").innerHTML = evaluation.cases.map((item) => `
-    <div class="result-row">
-      <div class="result-icon"><i data-lucide="${item.passed ? "check" : "x"}"></i></div>
-      <div class="result-copy"><strong>${escapeEvaluationHtml(item.name)}</strong><span>${escapeEvaluationHtml(item.expected)}</span></div>
-      <span class="case-id">${escapeEvaluationHtml(item.dimension)} · ${escapeEvaluationHtml(item.case)}</span>
-      <span class="result-state">${item.passed ? "通过" : "未通过"}</span>
-    </div>`).join("");
+  const featuredSystemNames = new Set(["跨系统色号冲突", "已上传图片不重复索要", "用户确认后动态完成"]);
+  const featuredModelIds = new Set(["qwen_negation", "qwen_ambiguity", "qwen_handoff"]);
+  const systemCases = evaluation.cases || [];
+  const modelCases = modelEvaluation.cases || [];
+  const featuredSystem = systemCases.filter((item) => featuredSystemNames.has(item.name) || !item.passed);
+  const featuredModel = modelCases.filter((item) => featuredModelIds.has(item.id) || !item.passed);
+  const remainingSystem = systemCases.filter((item) => !featuredSystem.includes(item));
+  const remainingModel = modelCases.filter((item) => !featuredModel.includes(item));
+  const featuredRows = featuredSystem.map(systemResultRow).join("") + featuredModel.map(modelResultRow).join("");
+  const remainingRows = remainingSystem.map(systemResultRow).join("") + remainingModel.map(modelResultRow).join("");
+  const remainingCount = remainingSystem.length + remainingModel.length;
+  document.querySelector("#evaluationCases").innerHTML = `${featuredRows}
+    ${remainingCount ? `<details class="all-results"><summary>查看其余 ${formatInteger(remainingCount)} 项测试明细</summary><div class="all-results-list">${remainingRows}</div></details>` : ""}`;
 
   const controls = [
     ["分析结果缓存", evaluation.cost_controls.analysis_cache ? "已开启" : "未开启"],
