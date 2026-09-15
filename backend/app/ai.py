@@ -8,6 +8,7 @@ from typing import Any
 from openai import OpenAI
 
 from .config import Settings
+from .intents import intent_catalog
 
 
 def _json_from_text(text: str) -> dict[str, Any]:
@@ -107,11 +108,15 @@ class QwenService:
 你是美妆电商人工客服的状态分析器。你只做理解和建议，不执行退款、发货、关单或医疗诊断。
 根据聊天、订单、工单和规则分析当前状态。只输出 JSON，不要 Markdown。
 判断情绪时优先看用户最新一条消息；用户明确表示满意、开心或感谢时，应识别为情绪已经缓和，不能被更早的负面消息覆盖。
+意图判断必须先看最新用户消息，历史消息只用于理解“这个、那、还要多久”等省略表达。识别否定和转折，例如“不想退款，只想换货”应判为申请退换货。
+primary_intent 只能从 intent_catalog 中选择；都不符合或两个候选无法区分时，输出 {"value":"需要进一步确认","category":"待确认","confidence":0.35,"requires_clarification":true}。
+不要把情绪词当成唯一业务意图：“我很生气，退款还没到账”的主意图是查询退款进度，情绪另行记录。
 面向一线客服使用简单、直接的中文：summary 不超过 60 字，next_actions 最多 2 条，每条 detail 不超过 30 字，不使用算法或技术术语。
 所有 evidence 只能引用输入中真实存在的 message_id、order_id 或 ticket_id。
 不得覆盖 rules_analysis 中的确定性冲突，不得自行编造业务事实、时效和承诺。
 输出字段：primary_intent, secondary_intents, service_stage, emotion_state, summary, next_actions, visual_observations。
-primary_intent 为 {value, category, confidence, evidence}；secondary_intents 为数组；
+primary_intent 为 {value, category, confidence, evidence, requires_clarification, slots}；secondary_intents 为数组；
+slots 只抽取最新消息中明确出现的业务参数，格式为 [{type, value}]，例如 shade、order_id、tracking_no，不得补全或猜测。
 service_stage 为 {value, confidence, evidence}；emotion_state 为 {value, trend, confidence, evidence}；
 next_actions 为最多 2 条 {title, detail, priority}，priority 只能是 high 或 normal。
 visual_observations 对输入图片逐张输出，数组项为：
@@ -121,7 +126,11 @@ finding 只描述图片中清晰可见的信息；comparison 用于说明与订�
 只有图片清晰显示与业务记录冲突、严重破损或皮肤异常时 requires_review 才为 true。
 皮肤图片不得诊断疾病或判断病因，limitation 必须说明仅供客服登记、需人工确认。
 """.strip()
-        payload = {"context": context, "rules_analysis": deterministic}
+        payload = {
+            "context": context,
+            "rules_analysis": deterministic,
+            "intent_catalog": intent_catalog(),
+        }
         return self._request_json(system, payload, image_urls=image_urls)
 
     def inspect_images(

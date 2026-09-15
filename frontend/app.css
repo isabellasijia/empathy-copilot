@@ -81,13 +81,47 @@ h4 { text-wrap: balance; }
 .copilot-brand strong { color: #1d1d1f; font-size: 13px; font-weight: 650; }
 .copilot-brand span { margin-top: 3px; color: #86868b; font-size: 9px; }
 .copilot-tabs {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 2px;
   margin: 0 16px 8px;
   padding: 3px;
   border: 0;
   border-radius: 8px;
   background: #e9e9ed;
+}
+
+.service-mode-button {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid #cfe0f7;
+  border-radius: 6px;
+  background: #edf5ff;
+  color: #1553a3;
+  font-size: 10px;
+  font-weight: 650;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.service-mode-button i { width: 14px; height: 14px; }
+.service-mode-button.human { border-color: #dcdde2; background: #f5f5f7; color: #3a3a3c; }
+.service-mode-button.handoff { border-color: #f0c5c2; background: #fff1f0; color: #b33630; }
+.service-mode-button:hover { filter: brightness(.98); }
+.service-mode-button:disabled { cursor: wait; opacity: .58; }
+
+.conversation-meta .unread {
+  min-width: 17px;
+  height: 17px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: #d9363e;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
 }
 .copilot-tab {
   height: 32px;

@@ -35,6 +35,19 @@ CREATE TABLE IF NOT EXISTS conversations (
     source_sheet TEXT NOT NULL DEFAULT '聊天记录'
 );
 
+CREATE TABLE IF NOT EXISTS conversation_states (
+    session_id TEXT PRIMARY KEY REFERENCES conversations(session_id) ON DELETE CASCADE,
+    unread_count INTEGER NOT NULL DEFAULT 0,
+    service_mode TEXT NOT NULL DEFAULT 'human' CHECK(service_mode IN ('ai', 'human')),
+    handoff_reason TEXT,
+    last_customer_seq INTEGER NOT NULL DEFAULT 0,
+    last_auto_replied_seq INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversation_states_unread
+ON conversation_states(unread_count, service_mode);
+
 CREATE TABLE IF NOT EXISTS messages (
     message_id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES conversations(session_id) ON DELETE CASCADE,

@@ -37,3 +37,8 @@ class RiskUpdateRequest(BaseModel):
     owner: str | None = Field(default=None, max_length=50)
     deadline: str | None = Field(default=None, max_length=40)
     status: Literal["待处理", "处理中", "待回访", "已关闭"] | None = None
+
+
+class ServiceModeRequest(BaseModel):
+    mode: Literal["ai", "human"]
+    reason: str | None = Field(default=None, max_length=120)

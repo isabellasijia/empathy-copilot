@@ -17,6 +17,7 @@ from .schemas import (
     QualityRequest,
     RiskUpdateRequest,
     SendRequest,
+    ServiceModeRequest,
 )
 from .service import EmpathyService
 
@@ -116,6 +117,24 @@ def send(session_id: str, request: SendRequest) -> dict[str, Any]:
         raise _not_found("会话", session_id)
 
 
+@app.post("/api/conversations/{session_id}/read")
+def mark_read(session_id: str) -> dict[str, Any]:
+    try:
+        return service.mark_conversation_read(session_id)
+    except KeyError:
+        raise _not_found("会话", session_id)
+
+
+@app.patch("/api/conversations/{session_id}/service-mode")
+def service_mode(session_id: str, request: ServiceModeRequest) -> dict[str, Any]:
+    try:
+        return service.set_service_mode(session_id, request.mode, request.reason)
+    except KeyError:
+        raise _not_found("会话", session_id)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
 @app.post("/api/conversations/{session_id}/incoming")
 def incoming(session_id: str, request: IncomingMessageRequest) -> dict[str, Any]:
     try:
@@ -153,7 +172,7 @@ def consumer_message(
             image_data_url=request.image_data_url,
             image_name=request.image_name,
         )
-        background_tasks.add_task(service.analyze, session_id)
+        background_tasks.add_task(service.handle_incoming, session_id)
         return {
             **received,
             "analysis_status": "queued",

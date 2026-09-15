@@ -17,6 +17,7 @@ from .ai import QwenService
 from .config import Settings
 from .db import database
 from .etl import import_workbook
+from .intents import is_allowed_intent
 from .orchestration import (
     SKILL_CATALOG,
     build_service_graph,
@@ -26,6 +27,7 @@ from .orchestration import (
 )
 from .rag import load_knowledge, search_knowledge
 from .rules import (
+    customer_confirmed_resolution,
     deterministic_analysis,
     deterministic_quality_check,
     extract_commitments,
@@ -91,10 +93,14 @@ class EmpathyService:
                 """,
                 (datetime.now().isoformat(timespec="seconds"),),
             ).fetchone()["value"]
+            unread_messages = connection.execute(
+                "SELECT COALESCE(SUM(unread_count), 0) AS value FROM conversation_states"
+            ).fetchone()["value"]
         return {
             **report,
             "open_risks": open_risks,
             "overdue_commitments": overdue,
+            "unread_messages": unread_messages,
             "ai": {
                 "configured": self.ai.configured,
                 "mode": "online" if self.ai.configured else "rehearsal",
@@ -151,6 +157,61 @@ class EmpathyService:
             item["value"]
             for item in consultation_analysis["customer_profile"]["traits"]
         }
+        logistics_bundle = self.get_bundle("S00018")
+        logistics_bundle["messages"] = [
+            *logistics_bundle["messages"],
+            {
+                "message_id": "EVAL-LATEST-INTENT",
+                "role": "customer",
+                "text": "补发的快递现在到哪里了？",
+                "content_type": "text",
+                "sent_at": datetime.now().isoformat(timespec="seconds"),
+            },
+        ]
+        logistics_analysis = deterministic_analysis(logistics_bundle)
+        resolved_bundle = self.get_bundle("S00018")
+        resolved_bundle["messages"] = [
+            *resolved_bundle["messages"],
+            {
+                "message_id": "EVAL-RESOLVED",
+                "role": "customer",
+                "text": "已经收到正确商品了，没问题了，谢谢。",
+                "content_type": "text",
+                "sent_at": datetime.now().isoformat(timespec="seconds"),
+            },
+        ]
+        resolved_analysis = deterministic_analysis(resolved_bundle)
+        handoff_bundle = self.get_bundle("S00019")
+        handoff_bundle["messages"] = [
+            *handoff_bundle["messages"],
+            {
+                "message_id": "EVAL-HANDOFF",
+                "role": "customer",
+                "text": "我想转人工客服。",
+                "content_type": "text",
+                "sent_at": datetime.now().isoformat(timespec="seconds"),
+            },
+        ]
+        handoff_analysis = deterministic_analysis(handoff_bundle)
+
+        def evaluate_intent(text: str) -> dict[str, Any]:
+            probe = self.get_bundle("S00019")
+            probe["messages"] = [
+                *probe["messages"],
+                {
+                    "message_id": f"EVAL-INTENT-{abs(hash(text))}",
+                    "role": "customer",
+                    "text": text,
+                    "content_type": "text",
+                    "sent_at": datetime.now().isoformat(timespec="seconds"),
+                },
+            ]
+            return deterministic_analysis(probe)["primary_intent"]
+
+        negation_intent = evaluate_intent("我不想退款，只想换一支。")
+        correction_intent = evaluate_intent("不是色号问题，是收到的瓶子漏液了。")
+        ambiguous_intent = evaluate_intent("退款和物流都帮我查一下。")
+        out_of_scope_intent = evaluate_intent("帮我写一份周报。")
 
         cases = [
             {
@@ -217,6 +278,62 @@ class EmpathyService:
                 "passed": "暖黄皮" in profile_values and any(value.startswith("#05") for value in profile_values),
                 "expected": "只记录用户主动提供的肤质和色号偏好",
             },
+            {
+                "id": "latest_turn_intent",
+                "name": "最新诉求覆盖历史场景",
+                "case": "S00018 + 物流追问",
+                "dimension": "意图识别",
+                "passed": logistics_analysis["primary_intent"]["category"] == "物流服务",
+                "expected": "历史为错发场景时，仍识别最新物流追问",
+            },
+            {
+                "id": "explicit_resolution",
+                "name": "用户确认后动态完成",
+                "case": "S00018 + 已解决确认",
+                "dimension": "服务状态",
+                "passed": resolved_analysis["resolution_state"]["score"] == 100,
+                "expected": "明确说没问题后，解决进度更新为 100%",
+            },
+            {
+                "id": "human_handoff",
+                "name": "主动要求人工转接",
+                "case": "S00019 + 转人工",
+                "dimension": "服务路由",
+                "passed": handoff_analysis["service_route"]["mode"] == "human",
+                "expected": "用户要求人工时停止自动回复并转人工",
+            },
+            {
+                "id": "intent_negation_scope",
+                "name": "否定范围识别",
+                "case": "不想退款，只想换货",
+                "dimension": "意图识别",
+                "passed": negation_intent["value"] == "申请退换货",
+                "expected": "排除被否定的退款意图，识别真实换货诉求",
+            },
+            {
+                "id": "intent_correction",
+                "name": "转折纠错识别",
+                "case": "不是色号，是瓶子漏液",
+                "dimension": "意图识别",
+                "passed": correction_intent["value"] == "处理商品破损",
+                "expected": "识别转折后的真实问题，不沿用前半句",
+            },
+            {
+                "id": "intent_ambiguity_fallback",
+                "name": "多意图低置信兜底",
+                "case": "退款和物流都要查",
+                "dimension": "意图识别",
+                "passed": bool(ambiguous_intent.get("requires_clarification")),
+                "expected": "候选接近时先澄清，不自动猜一个处理",
+            },
+            {
+                "id": "intent_out_of_scope",
+                "name": "超范围意图识别",
+                "case": "与客服无关的请求",
+                "dimension": "意图识别",
+                "passed": out_of_scope_intent["category"] == "待确认",
+                "expected": "未知请求进入待确认，不误套历史业务场景",
+            },
         ]
         passed = sum(1 for item in cases if item["passed"])
         dimensions: dict[str, dict[str, int]] = {}
@@ -271,9 +388,10 @@ class EmpathyService:
                 "max_chat_messages_per_analysis": 13,
                 "on_demand_model_routing": True,
                 "local_first_response": True,
+                "fast_auto_reply": True,
             },
             "architecture": {
-                "strategy": "规则先行 + 按需 Agent 编排",
+                "strategy": "层级意图候选 + 低置信兜底 + 按需 Agent 编排",
                 "skill_catalog": list(SKILL_CATALOG),
                 "sample_trace": sample_trace,
             },
@@ -300,9 +418,14 @@ class EmpathyService:
         query = """
             SELECT c.*,
                    (SELECT text FROM messages m WHERE m.session_id = c.session_id ORDER BY message_seq DESC LIMIT 1) AS preview,
+                   (SELECT role FROM messages m WHERE m.session_id = c.session_id ORDER BY message_seq DESC LIMIT 1) AS latest_role,
                    (SELECT COUNT(*) FROM risk_events r WHERE r.session_id = c.session_id AND r.status != '已关闭') AS open_risks,
-                   (SELECT COUNT(*) FROM commitments p WHERE p.session_id = c.session_id AND p.status != '已关闭') AS open_commitments
+                   (SELECT COUNT(*) FROM commitments p WHERE p.session_id = c.session_id AND p.status != '已关闭') AS open_commitments,
+                   COALESCE(s.unread_count, 0) AS unread_count,
+                   COALESCE(s.service_mode, 'human') AS service_mode,
+                   s.handoff_reason
             FROM conversations c
+            LEFT JOIN conversation_states s ON s.session_id = c.session_id
         """
         params: list[Any] = []
         if search:
@@ -351,6 +474,12 @@ class EmpathyService:
                     (session_id,),
                 ).fetchall()
             ]
+            service_state = _dict(
+                connection.execute(
+                    "SELECT * FROM conversation_states WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+            )
         for message in messages:
             message["image_url"] = self._message_image_url(message)
         return {
@@ -359,6 +488,122 @@ class EmpathyService:
             "order": order,
             "tickets": tickets,
             "commitments": commitments,
+            "service_state": service_state
+            or {
+                "session_id": session_id,
+                "unread_count": 0,
+                "service_mode": "human",
+                "handoff_reason": None,
+                "last_customer_seq": 0,
+                "last_auto_replied_seq": 0,
+            },
+        }
+
+    def mark_conversation_read(self, session_id: str) -> dict[str, Any]:
+        now = datetime.now().isoformat(timespec="seconds")
+        with database(self.settings.database_path) as connection:
+            cursor = connection.execute(
+                "UPDATE conversation_states SET unread_count = 0, updated_at = ? WHERE session_id = ?",
+                (now, session_id),
+            )
+            if cursor.rowcount == 0:
+                raise KeyError(session_id)
+            total = connection.execute(
+                "SELECT COALESCE(SUM(unread_count), 0) AS value FROM conversation_states"
+            ).fetchone()["value"]
+        return {"session_id": session_id, "unread_count": 0, "total_unread": total}
+
+    def set_service_mode(
+        self, session_id: str, mode: str, reason: str | None = None
+    ) -> dict[str, Any]:
+        if mode not in {"ai", "human"}:
+            raise ValueError("接待模式只能是 ai 或 human")
+        now = datetime.now().isoformat(timespec="seconds")
+        handoff_reason = reason if mode == "human" else None
+        with database(self.settings.database_path) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE conversation_states
+                SET service_mode = ?, handoff_reason = ?,
+                    last_auto_replied_seq = CASE
+                        WHEN ? = 'ai' THEN last_customer_seq
+                        ELSE last_auto_replied_seq
+                    END,
+                    updated_at = ?
+                WHERE session_id = ?
+                """,
+                (mode, handoff_reason, mode, now, session_id),
+            )
+            if cursor.rowcount == 0:
+                raise KeyError(session_id)
+            connection.execute(
+                "INSERT INTO action_log(session_id, action_type, actor, payload_json, created_at) VALUES (?, '切换接待模式', ?, ?, ?)",
+                (
+                    session_id,
+                    "系统" if reason else "林小稚",
+                    json.dumps({"mode": mode, "reason": reason}, ensure_ascii=False),
+                    now,
+                ),
+            )
+            state = _dict(
+                connection.execute(
+                    "SELECT * FROM conversation_states WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+            )
+        return state or {}
+
+    def handle_incoming(self, session_id: str) -> dict[str, Any]:
+        """Analyze a customer turn, auto-answer low-risk AI sessions, or hand off."""
+        analyzed = self.analyze(session_id, force=True)
+        analysis = analyzed["analysis"]
+        route = analysis.get("service_route") or {}
+        bundle = analyzed["bundle"]
+        state = bundle.get("service_state") or {}
+        latest_customer = next(
+            (item for item in reversed(bundle["messages"]) if item["role"] == "customer"),
+            {},
+        )
+        customer_seq = int(latest_customer.get("message_seq") or 0)
+
+        if route.get("mode") == "human":
+            reason = str(route.get("reason") or "需要人工承接")
+            if state.get("service_mode") != "human" or state.get("handoff_reason") != reason:
+                state = self.set_service_mode(session_id, "human", reason)
+            return {"status": "handed_off", "service_state": state, "analysis": analysis}
+
+        if state.get("service_mode") != "ai":
+            return {"status": "waiting_for_human", "service_state": state, "analysis": analysis}
+        if int(state.get("last_auto_replied_seq") or 0) >= customer_seq:
+            return {"status": "already_handled", "service_state": state, "analysis": analysis}
+
+        generated = self.draft(session_id, tone="自然", prefer_fast=True)
+        sent = self.send(session_id, generated["reply_draft"], "暖心客服")
+        if sent.get("status") != "sent":
+            state = self.set_service_mode(session_id, "human", "AI 回复需要人工复核")
+            return {"status": "handed_off", "service_state": state, "analysis": analysis}
+
+        now = datetime.now().isoformat(timespec="seconds")
+        with database(self.settings.database_path) as connection:
+            connection.execute(
+                """
+                UPDATE conversation_states
+                SET unread_count = 0, last_auto_replied_seq = ?, updated_at = ?
+                WHERE session_id = ?
+                """,
+                (customer_seq, now, session_id),
+            )
+            state = _dict(
+                connection.execute(
+                    "SELECT * FROM conversation_states WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+            )
+        return {
+            "status": "auto_replied",
+            "message_id": sent["message_id"],
+            "service_state": state,
+            "analysis": analysis,
         }
 
     def _message_image_path(self, message: dict[str, Any]) -> Path | None:
@@ -464,6 +709,10 @@ class EmpathyService:
                 if order
                 else None
             ),
+            "service_state": {
+                "service_mode": bundle["service_state"].get("service_mode", "human"),
+                "handoff_reason": bundle["service_state"].get("handoff_reason"),
+            },
         }
 
     def _model_context(self, bundle: dict[str, Any]) -> dict[str, Any]:
@@ -562,6 +811,31 @@ class EmpathyService:
         ids.update(ticket["ticket_id"] for ticket in bundle.get("tickets", []))
         return ids
 
+    @staticmethod
+    def _refresh_cached_live_state(
+        cached_result: dict[str, Any], current: dict[str, Any]
+    ) -> dict[str, Any]:
+        refreshed = dict(cached_result)
+        for key in ("primary_intent", "emotion_state", "resolution_state", "service_route"):
+            refreshed[key] = current[key]
+
+        intent = current.get("primary_intent") or {}
+        if intent.get("source") in {
+            "latest_turn",
+            "latest_turn_ambiguous",
+            "out_of_scope",
+        }:
+            for key in (
+                "summary",
+                "next_actions",
+                "service_stage",
+                "intent_shift",
+                "risk_level",
+                "risk_signals",
+            ):
+                refreshed[key] = current[key]
+        return refreshed
+
     def _sanitize_model_analysis(
         self,
         bundle: dict[str, Any],
@@ -605,6 +879,25 @@ class EmpathyService:
             return value
 
         merged = clean_evidence(merged)
+        model_intent = merged.get("primary_intent") or {}
+        deterministic_intent = deterministic.get("primary_intent") or {}
+        if not is_allowed_intent(model_intent):
+            merged["primary_intent"] = deterministic["primary_intent"]
+        elif deterministic_intent.get("source") == "latest_turn":
+            merged["primary_intent"] = deterministic_intent
+            for key in ("summary", "next_actions", "service_stage", "intent_shift"):
+                merged[key] = deterministic[key]
+        else:
+            merged["primary_intent"] = {
+                **model_intent,
+                "source": "qwen_context",
+                "requires_clarification": bool(
+                    model_intent.get("requires_clarification")
+                    or model_intent.get("category") == "待确认"
+                ),
+            }
+        merged["resolution_state"] = deterministic["resolution_state"]
+        merged["service_route"] = deterministic["service_route"]
         visual_observations = []
         for item in merged.get("visual_observations") or []:
             if not isinstance(item, dict):
@@ -706,10 +999,8 @@ class EmpathyService:
             ).fetchone()
         if cached:
             result = json.loads(cached["result_json"])
-            result.setdefault(
-                "resolution_state",
-                deterministic_analysis(bundle)["resolution_state"],
-            )
+            current = deterministic_analysis(bundle)
+            result = self._refresh_cached_live_state(result, current)
             result["run"] = {
                 "provider": cached["provider"],
                 "model": cached["model"],
@@ -762,10 +1053,8 @@ class EmpathyService:
                 ).fetchone()
             if cached:
                 result = json.loads(cached["result_json"])
-                result.setdefault(
-                    "resolution_state",
-                    deterministic_analysis(bundle)["resolution_state"],
-                )
+                current = deterministic_analysis(bundle)
+                result = self._refresh_cached_live_state(result, current)
                 result["run"] = {
                     "provider": cached["provider"],
                     "model": cached["model"],
@@ -868,7 +1157,9 @@ class EmpathyService:
         self._upsert_risks(bundle, result["risk_signals"])
         return {"bundle": bundle, "analysis": result}
 
-    def draft(self, session_id: str, tone: str = "自然") -> dict[str, Any]:
+    def draft(
+        self, session_id: str, tone: str = "自然", prefer_fast: bool = False
+    ) -> dict[str, Any]:
         analyzed = self.analyze(session_id)
         bundle = analyzed["bundle"]
         analysis = analyzed["analysis"]
@@ -897,9 +1188,10 @@ class EmpathyService:
             else []
         )
         fallback = fallback_reply(bundle, analysis, tone)
-        if not self.ai.configured:
+        if not self.ai.configured or prefer_fast:
             return {
                 **fallback,
+                "provider": "local-fast-path" if prefer_fast else fallback.get("provider", "rules"),
                 "knowledge": knowledge,
                 "orchestration": build_skill_trace(
                     bundle,
@@ -1074,7 +1366,19 @@ class EmpathyService:
                 "UPDATE conversations SET message_count = message_count + 1, last_message_at = ? WHERE session_id = ?",
                 (sent_at, session_id),
             )
-            connection.execute("DELETE FROM analysis_cache WHERE session_id = ?", (session_id,))
+            if actor != "暖心客服":
+                connection.execute(
+                    """
+                    UPDATE conversation_states
+                    SET service_mode = 'human', handoff_reason = '客服已接管', updated_at = ?
+                    WHERE session_id = ?
+                    """,
+                    (sent_at, session_id),
+                )
+            if actor != "暖心客服":
+                connection.execute(
+                    "DELETE FROM analysis_cache WHERE session_id = ?", (session_id,)
+                )
             connection.execute(
                 "INSERT INTO action_log(session_id, action_type, actor, payload_json, created_at) VALUES (?, '发送回复', ?, ?, ?)",
                 (session_id, actor, json.dumps({"message_id": message_id}, ensure_ascii=False), sent_at),
@@ -1144,6 +1448,19 @@ class EmpathyService:
                 "UPDATE conversations SET message_count = message_count + 1, last_message_at = ? WHERE session_id = ?",
                 (sent_at, session_id),
             )
+            connection.execute(
+                """
+                INSERT INTO conversation_states(
+                    session_id, unread_count, service_mode, handoff_reason,
+                    last_customer_seq, last_auto_replied_seq, updated_at
+                ) VALUES (?, 1, 'human', NULL, ?, 0, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    unread_count = conversation_states.unread_count + 1,
+                    last_customer_seq = excluded.last_customer_seq,
+                    updated_at = excluded.updated_at
+                """,
+                (session_id, maximum + 1, sent_at),
+            )
             connection.execute("DELETE FROM analysis_cache WHERE session_id = ?", (session_id,))
         if analyze:
             result = self.analyze(session_id, force=True)
@@ -1160,7 +1477,30 @@ class EmpathyService:
 
     def _upsert_risks(self, bundle: dict[str, Any], risks: list[dict[str, Any]]) -> None:
         now = datetime.now().isoformat(timespec="seconds")
+        session_id = bundle["conversation"]["session_id"]
+        active_keys = [str(item["risk_key"]) for item in risks]
         with database(self.settings.database_path) as connection:
+            if active_keys:
+                placeholders = ",".join("?" for _ in active_keys)
+                connection.execute(
+                    f"""
+                    UPDATE risk_events
+                    SET status = '已关闭', updated_at = ?
+                    WHERE session_id = ? AND risk_type != 'adverse_reaction'
+                      AND status != '已关闭' AND risk_key NOT IN ({placeholders})
+                    """,
+                    (now, session_id, *active_keys),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE risk_events
+                    SET status = '已关闭', updated_at = ?
+                    WHERE session_id = ? AND risk_type != 'adverse_reaction'
+                      AND status != '已关闭'
+                    """,
+                    (now, session_id),
+                )
             for risk in risks:
                 deadline = (
                     datetime.now() + timedelta(hours=24 if risk["type"] == "adverse_reaction" else 4)
@@ -1175,6 +1515,10 @@ class EmpathyService:
                         title = excluded.title,
                         detail = excluded.detail,
                         evidence_json = excluded.evidence_json,
+                        status = CASE
+                            WHEN risk_events.status = '已关闭' THEN '待处理'
+                            ELSE risk_events.status
+                        END,
                         updated_at = excluded.updated_at
                     """,
                     (
@@ -1192,13 +1536,29 @@ class EmpathyService:
                 )
 
     def seed_derived_records(self) -> None:
+        now = datetime.now().isoformat(timespec="seconds")
         with database(self.settings.database_path) as connection:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO conversation_states(
+                    session_id, unread_count, service_mode, handoff_reason,
+                    last_customer_seq, last_auto_replied_seq, updated_at
+                )
+                SELECT session_id, 0,
+                       CASE WHEN session_id = 'S00019' THEN 'ai' ELSE 'human' END,
+                       NULL,
+                       COALESCE((SELECT MAX(message_seq) FROM messages m WHERE m.session_id = conversations.session_id AND m.role = 'customer'), 0),
+                       0,
+                       ?
+                FROM conversations
+                """,
+                (now,),
+            )
             sessions = [row["session_id"] for row in connection.execute("SELECT session_id FROM conversations")]
         for session_id in sessions:
             bundle = self.get_bundle(session_id)
             analysis = deterministic_analysis(bundle)
             self._upsert_risks(bundle, analysis["risk_signals"])
-            now = datetime.now().isoformat(timespec="seconds")
             with database(self.settings.database_path) as connection:
                 for message in bundle["messages"]:
                     if message["role"] != "agent":

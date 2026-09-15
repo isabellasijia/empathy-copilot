@@ -143,6 +143,7 @@ def import_workbook(workbook_path: Path, database_path: Path, force: bool = Fals
             "tickets",
             "orders",
             "messages",
+            "conversation_states",
             "conversations",
             "raw_records",
         ):
@@ -308,4 +309,3 @@ def import_workbook(workbook_path: Path, database_path: Path, force: bool = Fals
 
     workbook.close()
     return report
-

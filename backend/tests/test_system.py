@@ -7,7 +7,7 @@ import pytest
 from app.config import Settings
 from app.orchestration import build_service_graph, should_use_understanding_model
 from app.rag import search_knowledge
-from app.rules import deterministic_analysis
+from app.rules import deterministic_analysis, fallback_reply, infer_current_intent
 from app.service import EmpathyService
 
 
@@ -199,7 +199,7 @@ def test_customer_profile_only_uses_service_evidence(service: EmpathyService) ->
 
 def test_evaluation_suite_is_reproducible(service: EmpathyService) -> None:
     result = service.evaluation_summary()
-    assert result["suite"]["passed"] == result["suite"]["total"] == 8
+    assert result["suite"]["passed"] == result["suite"]["total"] == 15
     assert result["dimensions"]["情绪判断"] == {"passed": 2, "total": 2}
     assert result["dimensions"]["风险识别"] == {"passed": 2, "total": 2}
     assert result["cost_controls"]["analysis_cache"] is True
@@ -267,3 +267,205 @@ def test_draft_exposes_real_skill_and_retrieval_trace(
         if item["status"] == "called"
     }
     assert {"order_lookup", "ticket_lookup", "risk_guard", "hybrid_knowledge"} <= called
+
+
+def test_latest_turn_intent_overrides_historical_scene(service: EmpathyService) -> None:
+    bundle = service.get_bundle("S00018")
+    bundle["messages"] = [
+        *bundle["messages"],
+        {
+            "message_id": "TEST-LOGISTICS-INTENT",
+            "role": "customer",
+            "text": "补发的快递现在到哪里了？",
+            "content_type": "text",
+            "sent_at": "2026-09-15T10:00:00",
+        },
+    ]
+    intent = infer_current_intent(bundle)
+    assert intent["category"] == "物流服务"
+    assert intent["value"] == "查询物流进度"
+    assert intent["source"] == "latest_turn"
+
+
+def test_customer_saying_no_problem_completes_resolution(service: EmpathyService) -> None:
+    bundle = service.get_bundle("S00018")
+    bundle["messages"] = [
+        *bundle["messages"],
+        {
+            "message_id": "TEST-NO-PROBLEM",
+            "role": "customer",
+            "text": "已经收到正确商品了，没问题了，谢谢。",
+            "content_type": "text",
+            "sent_at": "2026-09-15T10:05:00",
+        },
+    ]
+    analysis = deterministic_analysis(bundle)
+    assert analysis["primary_intent"]["category"] == "服务确认"
+    assert analysis["resolution_state"]["score"] == 100
+    assert analysis["resolution_state"]["stage"] == "已解决"
+    assert not any(item["type"] == "product_mismatch" for item in analysis["risk_signals"])
+
+
+def test_cached_summary_is_refreshed_after_explicit_resolution(
+    service: EmpathyService,
+) -> None:
+    bundle = service.get_bundle("S00018")
+    bundle["messages"] = [
+        *bundle["messages"],
+        {
+            "message_id": "TEST-CACHE-RESOLVED",
+            "role": "customer",
+            "text": "已经收到正确商品了，没问题了，谢谢。",
+            "content_type": "text",
+            "sent_at": "2026-09-15T10:06:00",
+        },
+    ]
+    current = deterministic_analysis(bundle)
+    stale = {
+        **current,
+        "summary": "还在等待补发。",
+        "next_actions": [{"title": "继续催促", "detail": "旧步骤", "priority": "high"}],
+    }
+    refreshed = service._refresh_cached_live_state(stale, current)
+    assert refreshed["summary"] == "用户已明确表示问题解决，可以完成记录并结束本次服务。"
+    assert refreshed["next_actions"][0]["title"] == "确认结束本次服务"
+
+
+def test_unread_badge_is_message_state_not_risk_count(service: EmpathyService) -> None:
+    before = next(item for item in service.list_conversations(limit=200) if item["session_id"] == "S00019")
+    service.add_incoming("S00019", "我想再看看适合通勤的色号。", analyze=False)
+    after = next(item for item in service.list_conversations(limit=200) if item["session_id"] == "S00019")
+    assert after["unread_count"] == before["unread_count"] + 1
+    assert after["open_risks"] == before["open_risks"]
+    read = service.mark_conversation_read("S00019")
+    assert read["unread_count"] == 0
+
+
+def test_ai_first_response_then_explicit_handoff(service: EmpathyService) -> None:
+    service.set_service_mode("S00019", "ai")
+    service.add_incoming("S00019", "敏感肌适合怎么选？", analyze=False)
+    handled = service.handle_incoming("S00019")
+    assert handled["status"] == "auto_replied"
+    bundle = service.get_bundle("S00019")
+    assert bundle["messages"][-1]["sender"] == "暖心客服"
+    assert bundle["service_state"]["unread_count"] == 0
+    assert service.snapshot("S00019")["analysis"]["run"]["cached"] is True
+
+    service.add_incoming("S00019", "我想转人工客服。", analyze=False)
+    handed_off = service.handle_incoming("S00019")
+    assert handed_off["status"] == "handed_off"
+    assert handed_off["service_state"]["service_mode"] == "human"
+    assert handed_off["service_state"]["unread_count"] == 1
+    assert "用户主动要求人工" in handed_off["service_state"]["handoff_reason"]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("我不想退款，只想换一支。", "申请退换货"),
+        ("不是色号问题，是收到的瓶子漏液了。", "处理商品破损"),
+        ("你们说退款了，但是钱还没到账。", "查询退款进度"),
+    ],
+)
+def test_intent_ranking_handles_negation_and_corrections(
+    service: EmpathyService, text: str, expected: str
+) -> None:
+    bundle = service.get_bundle("S00019")
+    bundle["messages"] = [
+        *bundle["messages"],
+        {
+            "message_id": f"TEST-RANK-{expected}",
+            "role": "customer",
+            "text": text,
+            "content_type": "text",
+            "sent_at": "2026-09-15T10:10:00",
+        },
+    ]
+    assert infer_current_intent(bundle)["value"] == expected
+
+
+def test_intent_router_extracts_explicit_business_slots(
+    service: EmpathyService,
+) -> None:
+    bundle = service.get_bundle("S00019")
+    bundle["messages"] = [
+        *bundle["messages"],
+        {
+            "message_id": "TEST-INTENT-SLOTS",
+            "role": "customer",
+            "text": "订单 6920842605036203732 的 #05枫叶红到哪里了？",
+            "content_type": "text",
+            "sent_at": "2026-09-15T10:11:30",
+        },
+    ]
+    slots = infer_current_intent(bundle)["slots"]
+    assert {item["type"] for item in slots} == {"order_id", "shade"}
+    assert {item["value"] for item in slots} == {"6920842605036203732", "#05枫叶红"}
+
+
+def test_fast_reply_follows_ranked_aftersales_intent(
+    service: EmpathyService,
+) -> None:
+    bundle = service.get_bundle("S00019")
+    bundle["messages"] = [
+        *bundle["messages"],
+        {
+            "message_id": "TEST-FAST-EXCHANGE",
+            "role": "customer",
+            "text": "我不想退款，只想换一支。",
+            "content_type": "text",
+            "sent_at": "2026-09-15T10:11:40",
+        },
+    ]
+    analysis = deterministic_analysis(bundle)
+    reply = fallback_reply(bundle, analysis)["reply_draft"]
+    assert "换货" in reply
+    assert "不会误按退款处理" in reply
+
+
+def test_ambiguous_and_out_of_scope_intents_do_not_guess(
+    service: EmpathyService,
+) -> None:
+    bundle = service.get_bundle("S00019")
+    bundle["messages"] = [
+        *bundle["messages"],
+        {
+            "message_id": "TEST-AMBIGUOUS",
+            "role": "customer",
+            "text": "退款和物流都帮我查一下。",
+            "content_type": "text",
+            "sent_at": "2026-09-15T10:11:00",
+        },
+    ]
+    ambiguous = infer_current_intent(bundle)
+    assert ambiguous["requires_clarification"] is True
+    assert ambiguous["source"] == "latest_turn_ambiguous"
+
+    bundle["messages"][-1] = {
+        **bundle["messages"][-1],
+        "message_id": "TEST-OUT-OF-SCOPE",
+        "text": "帮我写一份周报。",
+    }
+    out_of_scope = infer_current_intent(bundle)
+    assert out_of_scope["category"] == "待确认"
+    assert out_of_scope["requires_clarification"] is True
+
+
+@pytest.mark.parametrize("text", ["没问题了吗？", "我不是说问题解决了。"])
+def test_resolution_questions_and_negations_do_not_close_case(
+    service: EmpathyService, text: str
+) -> None:
+    bundle = service.get_bundle("S00018")
+    bundle["messages"] = [
+        *bundle["messages"],
+        {
+            "message_id": "TEST-NOT-RESOLVED",
+            "role": "customer",
+            "text": text,
+            "content_type": "text",
+            "sent_at": "2026-09-15T10:12:00",
+        },
+    ]
+    analysis = deterministic_analysis(bundle)
+    assert analysis["primary_intent"]["category"] != "服务确认"
+    assert analysis["resolution_state"]["score"] < 100

@@ -57,6 +57,7 @@ function renderEvaluation(health, evaluation) {
     ["回复生成去重", evaluation.cost_controls.draft_deduplication ? "已开启" : "未开启"],
     ["上下文压缩", evaluation.cost_controls.context_strategy],
     ["按需模型路由", evaluation.cost_controls.on_demand_model_routing ? "已开启" : "未开启"],
+    ["AI 首次回复快速通道", evaluation.cost_controls.fast_auto_reply ? "已开启" : "未开启"],
   ];
   document.querySelector("#costControls").innerHTML = controls.map(([name, detail]) => `
     <div class="control-item"><i data-lucide="circle-check"></i><div><strong>${escapeEvaluationHtml(name)}</strong><span>${escapeEvaluationHtml(detail)}</span></div></div>`).join("");

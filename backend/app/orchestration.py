@@ -6,6 +6,7 @@ from typing import Any
 
 SKILL_CATALOG = (
     {"id": "context_builder", "label": "上下文整理", "mode": "local"},
+    {"id": "intent_router", "label": "意图路由", "mode": "hybrid"},
     {"id": "order_lookup", "label": "订单查询", "mode": "local"},
     {"id": "ticket_lookup", "label": "工单查询", "mode": "local"},
     {"id": "service_memory", "label": "服务记忆", "mode": "local"},
@@ -53,10 +54,16 @@ def should_use_understanding_model(
         item.get("content_type") == "image" and item.get("image_available")
         for item in bundle.get("messages", [])
     )
+    intent = analysis.get("primary_intent") or {}
+    intent_uncertain = bool(
+        intent.get("requires_clarification")
+        or intent.get("source") in {"out_of_scope", "latest_turn_ambiguous"}
+        or float(intent.get("confidence") or 0) < 0.7
+    )
     return bool(
         has_viewable_image
         or analysis.get("risk_level") in {"high", "medium"}
-        or not is_simple_turn(bundle)
+        or intent_uncertain
     )
 
 
@@ -78,6 +85,10 @@ def build_service_features(
         "image_count": sum(item.get("content_type") == "image" for item in messages),
         "intent_level_1": analysis.get("primary_intent", {}).get("category"),
         "intent_level_2": analysis.get("primary_intent", {}).get("value"),
+        "intent_confidence": analysis.get("primary_intent", {}).get("confidence"),
+        "intent_source": analysis.get("primary_intent", {}).get("source"),
+        "intent_needs_clarification": analysis.get("primary_intent", {}).get("requires_clarification", False),
+        "intent_slot_count": len(analysis.get("primary_intent", {}).get("slots") or []),
         "secondary_intent_count": len(analysis.get("secondary_intents", [])),
         "emotion": analysis.get("emotion_state", {}).get("value"),
         "risk_level": analysis.get("risk_level"),
@@ -137,6 +148,12 @@ def build_skill_trace(
     has_risk = analysis.get("risk_level") in {"high", "medium"}
     decisions = {
         "context_builder": (True, "整合最新对话与服务状态"),
+        "intent_router": (
+            True,
+            "本地候选已确认"
+            if not analysis.get("primary_intent", {}).get("requires_clarification")
+            else "候选接近，交深度模型复核",
+        ),
         "order_lookup": (
             bool(bundle.get("order")),
             "已关联订单" if bundle.get("order") else "本轮无关联订单",

@@ -4,6 +4,13 @@ import re
 from datetime import datetime, timedelta
 from typing import Any
 
+from .intents import (
+    contains_unnegated_phrase,
+    context_dependent_turn,
+    extract_intent_slots,
+    rank_turn_intents,
+)
+
 
 SHADE_PATTERN = re.compile(r"#?\s*(\d{2})\s*([\u4e00-\u9fff]{0,6})")
 NEGATIVE_WORDS = ("开啥玩笑", "太离谱", "生气", "不满意", "不开心", "投诉", "差评", "没法用", "走点心", "反复")
@@ -23,6 +30,143 @@ SKIN_PROFILE_TERMS = (
     "冷白皮",
     "唇纹深",
 )
+
+RESOLVED_PHRASES = (
+    "问题解决了",
+    "已经解决了",
+    "已经解决",
+    "处理好了",
+    "没问题了",
+    "没有问题了",
+    "确认没问题",
+    "收到正确商品",
+    "不用处理了",
+    "可以结束了",
+    "都好了",
+)
+UNRESOLVED_PHRASES = (
+    "还没解决",
+    "没有解决",
+    "没解决",
+    "根本没好",
+    "还是有问题",
+    "问题还在",
+    "还没好",
+    "仍然没好",
+)
+HUMAN_HANDOFF_PHRASES = (
+    "转人工",
+    "人工客服",
+    "真人客服",
+    "找人工",
+    "找真人",
+    "找主管",
+    "找经理",
+)
+
+
+def _customer_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [item for item in messages if item.get("role") == "customer"]
+
+
+def _latest_customer_message(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    customers = _customer_messages(messages)
+    return customers[-1] if customers else {}
+
+
+def customer_confirmed_resolution(messages: list[dict[str, Any]]) -> bool:
+    latest = (_latest_customer_message(messages).get("text") or "").strip()
+    if (
+        not latest
+        or contains_unnegated_phrase(latest, UNRESOLVED_PHRASES)
+        or any(marker in latest for marker in ("没问题了吗", "解决了吗", "真的解决", "是不是解决"))
+    ):
+        return False
+    return contains_unnegated_phrase(latest, RESOLVED_PHRASES)
+
+
+def infer_current_intent(bundle: dict[str, Any]) -> dict[str, Any]:
+    """Rank the latest turn, then use recent context only for elliptical replies."""
+    conversation = bundle["conversation"]
+    customers = _customer_messages(bundle.get("messages", []))
+    latest = customers[-1] if customers else {}
+    latest_text = (latest.get("text") or "").strip()
+    evidence = [str(latest["message_id"])] if latest.get("message_id") else []
+    latest_slots = extract_intent_slots(latest_text)
+
+    lifecycle_rules = (
+        ("需要人工帮助", "转人工", HUMAN_HANDOFF_PHRASES),
+        ("反馈问题仍未解决", "服务升级", UNRESOLVED_PHRASES),
+        ("确认问题已解决", "服务确认", RESOLVED_PHRASES),
+    )
+    for value, category, phrases in lifecycle_rules:
+        matched = contains_unnegated_phrase(latest_text, phrases)
+        if category == "服务确认":
+            matched = customer_confirmed_resolution(bundle.get("messages", []))
+        if matched:
+            return {
+                "value": value,
+                "category": category,
+                "confidence": 0.99,
+                "evidence": evidence,
+                "source": "latest_turn",
+                "requires_clarification": False,
+                "candidates": [],
+                "slots": latest_slots,
+            }
+
+    candidates = rank_turn_intents(latest_text)
+    if _shade(latest_text) and any(
+        phrase in latest_text for phrase in ("适合", "显", "要", "来一支", "买", "选")
+    ) and not any(item["value"] == "色号选择" for item in candidates):
+        candidates.insert(0, {"value": "色号选择", "category": "产品咨询", "score": 1.55, "matched_phrases": ["色号实体"]})
+
+    if candidates:
+        top = candidates[0]
+        runner_up = candidates[1] if len(candidates) > 1 else None
+        margin = top["score"] - runner_up["score"] if runner_up else top["score"]
+        ambiguous = bool(runner_up and margin < 0.32 and runner_up["category"] != top["category"])
+        confidence = min(0.98, 0.76 + top["score"] * 0.1 + max(margin, 0) * 0.08)
+        return {
+            "value": top["value"],
+            "category": top["category"],
+            "confidence": round(0.62 if ambiguous else confidence, 2),
+            "evidence": evidence,
+            "source": "latest_turn_ambiguous" if ambiguous else "latest_turn",
+            "requires_clarification": ambiguous,
+            "candidates": candidates[:3],
+            "slots": latest_slots,
+        }
+
+    if context_dependent_turn(latest_text):
+        for message in list(reversed(customers[:-1]))[:3]:
+            ranked = rank_turn_intents(message.get("text") or "")
+            if ranked:
+                top = ranked[0]
+                return {
+                    "value": top["value"],
+                    "category": top["category"],
+                    "confidence": 0.78,
+                    "evidence": [str(message["message_id"]), *evidence],
+                    "source": "recent_context",
+                    "requires_clarification": False,
+                    "candidates": ranked[:3],
+                    "slots": [
+                        *extract_intent_slots(message.get("text") or ""),
+                        *latest_slots,
+                    ],
+                }
+
+    return {
+        "value": "需要进一步确认",
+        "category": "待确认",
+        "confidence": 0.35,
+        "evidence": evidence,
+        "source": "out_of_scope",
+        "requires_clarification": True,
+        "candidates": [],
+        "slots": latest_slots,
+    }
 
 
 def _shade(value: str | None) -> tuple[str, str] | None:
@@ -90,6 +234,8 @@ def detect_conflicts(bundle: dict[str, Any]) -> list[dict[str, Any]]:
     conflicts: list[dict[str, Any]] = []
     if not order:
         return conflicts
+    if customer_confirmed_resolution(bundle.get("messages", [])):
+        return conflicts
 
     for ticket in tickets:
         if ticket.get("ticket_kind") != "补发换货":
@@ -101,11 +247,6 @@ def detect_conflicts(bundle: dict[str, Any]) -> list[dict[str, Any]]:
         mismatch = bool(expected_sku and outgoing_sku and expected_sku != outgoing_sku)
         mismatch = mismatch or bool(expected_shade and outgoing_shade and expected_shade[0] != outgoing_shade[0])
         if not mismatch or "错发" not in (conversation.get("scene_minor") or ""):
-            continue
-
-        resolved_by_agent = _agent_resolved_shade(bundle["messages"], expected_shade)
-        if resolved_by_agent:
-            # 客服已经在聊天中明确承诺改发正确色号，冲突进入“已改口”阶段，不再作为高危挂起。
             continue
 
         customer_message = next(
@@ -179,7 +320,7 @@ def infer_emotion(messages: list[dict[str, Any]]) -> dict[str, Any]:
             "confidence": 0.92,
             "evidence": evidence_ids[-1:],
         }
-    if any(word in latest for word in POSITIVE_WORDS):
+    if customer_confirmed_resolution(messages) or any(word in latest for word in POSITIVE_WORDS):
         return {
             "value": "满意",
             "trend": "情绪已缓和",
@@ -246,10 +387,7 @@ def infer_resolution(
         if latest_agent.get("message_id"):
             evidence.append(str(latest_agent["message_id"]))
 
-    explicit_resolved = any(
-        value in latest_customer_text
-        for value in ("问题解决了", "已经解决", "处理好了", "收到正确", "确认没问题")
-    )
+    explicit_resolved = customer_confirmed_resolution(messages)
     if explicit_resolved:
         score += 25
     elif emotion.get("value") == "满意":
@@ -262,6 +400,12 @@ def infer_resolution(
         score = min(score, 28)
         stage = "先安抚"
         summary = "客户仍有明显不满，先回应感受并明确下一步。"
+    elif explicit_resolved and not any(
+        item.get("type") == "adverse_reaction" for item in high_risks
+    ):
+        score = 100
+        stage = "已解决"
+        summary = "客户已明确确认问题解决，可以完成记录并结束本次服务。"
     elif high_risks:
         score = min(score, 68)
         stage = "待核对"
@@ -269,10 +413,6 @@ def infer_resolution(
             summary = "客户情绪已缓和，但关键问题仍需核对后才能关闭。"
         else:
             summary = "关键问题尚未排除，核对完成前不要确认已解决。"
-    elif explicit_resolved and (not tickets or score >= 80):
-        score = max(score, 94)
-        stage = "已解决"
-        summary = "客户已确认问题解决，可以完成记录并结束本次服务。"
     elif any(value in ticket_statuses for value in ("完结", "成功", "已关闭")):
         score = max(score, 84)
         stage = "待确认"
@@ -463,8 +603,9 @@ def deterministic_analysis(bundle: dict[str, Any]) -> dict[str, Any]:
     messages = bundle["messages"]
     conflicts = detect_conflicts(bundle)
     emotion = infer_emotion(messages)
+    current_intent = infer_current_intent(bundle)
     major = conversation.get("scene_major") or "其他服务"
-    minor = conversation.get("scene_minor") or "待确认"
+    minor = current_intent["value"]
     customer_ids = [message["message_id"] for message in messages if message["role"] == "customer"]
     primary_evidence = customer_ids[-2:] or [message["message_id"] for message in messages[-2:]]
 
@@ -485,11 +626,11 @@ def deterministic_analysis(bundle: dict[str, Any]) -> dict[str, Any]:
         secondary.append({"value": "避免再次处理错误", "confidence": 1.0, "evidence": [item["id"] for item in conflicts[0]["evidence"]]})
     if emotion["value"] in ("不满", "愤怒"):
         secondary.append({"value": "恢复对服务的信任", "confidence": 0.82, "evidence": emotion["evidence"]})
-    if major == "不良反应":
+    if major == "不良反应" or current_intent["category"] == "不良反应":
         secondary.append({"value": "获得安全处理与回访", "confidence": 0.96, "evidence": primary_evidence})
 
     risks = list(conflicts)
-    if major == "不良反应":
+    if major == "不良反应" or current_intent["category"] == "不良反应":
         ticket = next((item for item in bundle.get("tickets", []) if item.get("ticket_kind") == "不良反应"), None)
         evidence = [_evidence(message["message_id"], "聊天", "用户自述", message["text"], message.get("source_row")) for message in messages if message["role"] == "customer" and any(word in message["text"] for word in WORRY_WORDS)][:3]
         if ticket:
@@ -505,7 +646,34 @@ def deterministic_analysis(bundle: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
-    if conflicts:
+    if current_intent["category"] == "服务确认":
+        summary = "用户已明确表示问题解决，可以完成记录并结束本次服务。"
+        next_actions = [
+            {"title": "确认结束本次服务", "detail": "记录用户确认，无需继续重复跟进。", "priority": "normal"},
+        ]
+    elif current_intent["category"] == "转人工":
+        summary = "用户明确希望由人工处理，请立即接管并保留前序信息。"
+        next_actions = [
+            {"title": "人工立即接管", "detail": "不用让用户重复说明，直接承接当前问题。", "priority": "high"},
+        ]
+    elif current_intent.get("requires_clarification"):
+        candidates = current_intent.get("candidates") or []
+        candidate_names = "、".join(item["value"] for item in candidates[:2])
+        summary = (
+            f"这句话可能同时涉及「{candidate_names}」，先确认用户这次最想处理哪一件事。"
+            if candidate_names
+            else "暂时无法确定用户这次想处理什么，先用一句话确认，不要沿用旧问题猜测。"
+        )
+        next_actions = [
+            {"title": "先确认当前问题", "detail": "请用户说明这次最想先处理的一件事。", "priority": "normal"},
+        ]
+    elif conflicts and current_intent["category"] == "物流服务":
+        summary = f"用户当前在问「{minor}」，但补发商品记录仍有冲突，核对正确色号后再同步物流。"
+        next_actions = [
+            {"title": "先核对补发商品", "detail": "确认色号无误后再查询真实物流节点。", "priority": "high"},
+            {"title": "同步真实物流", "detail": "只引用订单页已有运单和状态。", "priority": "normal"},
+        ]
+    elif conflicts:
         summary = conflicts[0]["detail"] + " 先核对清楚，再回复用户。"
         next_actions = [
             {"title": "先别确认已经补发", "detail": "色号没核对清楚前，不要承诺发货。", "priority": "high"},
@@ -527,14 +695,14 @@ def deterministic_analysis(bundle: dict[str, Any]) -> dict[str, Any]:
             {"title": "跟进补发进度", "detail": f"确认{shade_label} 补发单当前的仓库/物流节点，运单号一旦生成即同步。", "priority": "high"},
             {"title": "引导用户看订单页", "detail": "让用户在「我的订单-物流详情」实时查看进度，避免口头给时效。", "priority": "normal"},
         ]
-    elif major == "不良反应":
+    elif major == "不良反应" or current_intent["category"] == "不良反应":
         summary = "用户用了产品后不舒服。不要判断病因，请交给专人跟进。"
         next_actions = [
             {"title": "交给专人处理", "detail": "不要判断原因，也不要让用户继续试用。", "priority": "high"},
             {"title": "确认回访时间", "detail": "情况加重时，提醒用户及时就医。", "priority": "high"},
         ]
     else:
-        summary = f"用户现在想处理「{minor}」。已有订单和工单，不要让用户重复说明。"
+        summary = f"用户当前想处理「{minor}」。请结合已有订单和工单直接承接。"
         next_actions = [
             {"title": "查看当前处理进度", "detail": "使用已关联的订单和工单，避免让用户重复说明。", "priority": "normal"},
             {"title": "只确认关键缺失信息", "detail": "如无关键缺失项，直接给出可执行的下一步。", "priority": "normal"},
@@ -542,14 +710,23 @@ def deterministic_analysis(bundle: dict[str, Any]) -> dict[str, Any]:
 
     risk_level = "high" if any(item["severity"] == "high" for item in risks) else "medium" if risks else "none"
     resolution = infer_resolution(bundle, risks, emotion)
-    if reship_resolved_message and not conflicts:
-        minor_display = "跟进补发进度" if not customer_asking_logistics else "确认发货时效"
-    else:
-        minor_display = minor
+    route_reasons: list[str] = []
+    if current_intent["category"] == "转人工":
+        route_reasons.append("用户主动要求人工")
+    if risk_level == "high":
+        route_reasons.append("存在高风险事项")
+    if emotion["value"] in ("愤怒", "不满"):
+        route_reasons.append("客户情绪需要人工承接")
+    service_route = {
+        "mode": "human" if route_reasons else "ai",
+        "label": "转人工处理" if route_reasons else "AI 可继续接待",
+        "reason": "；".join(route_reasons) if route_reasons else "当前问题低风险且信息充分",
+        "confidence": 0.98 if route_reasons else 0.86,
+    }
     return {
-        "primary_intent": {"value": minor_display, "category": major, "confidence": 0.96, "evidence": primary_evidence},
+        "primary_intent": current_intent,
         "secondary_intents": secondary,
-        "service_stage": {"value": _service_stage(bundle.get("tickets", []), conflicts), "confidence": 0.9, "evidence": [ticket["ticket_id"] for ticket in bundle.get("tickets", [])]},
+        "service_stage": {"value": "服务完成" if current_intent["category"] == "服务确认" else _service_stage(bundle.get("tickets", []), conflicts), "confidence": 0.9, "evidence": [ticket["ticket_id"] for ticket in bundle.get("tickets", [])]},
         "emotion_state": emotion,
         "resolution_state": resolution,
         "risk_level": risk_level,
@@ -565,6 +742,7 @@ def deterministic_analysis(bundle: dict[str, Any]) -> dict[str, Any]:
         "memory": build_memory(bundle),
         "customer_profile": build_customer_profile(bundle),
         "visual_observations": [],
+        "service_route": service_route,
         "source": "rules",
     }
 
@@ -585,9 +763,39 @@ def fallback_reply(bundle: dict[str, Any], analysis: dict[str, Any], tone: str =
     logistics_keywords = ("发货时间", "多久", "几天", "什么时候", "何时", "物流", "快递", "送到", "到货", "什么时候能")
     customer_asking_logistics = any(any(word in text for word in logistics_keywords) for text in latest_customer_texts)
 
-    if any(item["type"] == "product_mismatch" for item in analysis["risk_signals"]):
+    if analysis["primary_intent"].get("requires_clarification"):
+        candidates = analysis["primary_intent"].get("candidates") or []
+        names = "、".join(item["value"] for item in candidates[:2])
+        reply = (
+            f"我先确认一下，您这次主要想先处理「{names}」中的哪一项？确认后我马上按这一件事继续帮您。"
+            if names
+            else "我想先准确理解您的需求。请问您这次最想先处理的是商品咨询、物流、退款，还是售后问题？"
+        )
+        tags = ["确认当前问题", "避免错误处理"]
+    elif any(item["type"] == "product_mismatch" for item in analysis["risk_signals"]):
         reply = "抱歉让您久等了。我在核对换货记录时发现，补发商品与您确认的色号不一致。为避免再次发错，我已暂停普通处理并优先复核实际补发商品，确认后会立即同步给您。"
         tags = ["已发现冲突", "避免二次错发", "暂不过度承诺"]
+    elif analysis["primary_intent"].get("category") == "服务确认":
+        reply = "收到，感谢您确认问题已经解决。我已为您记录本次处理结果；后续还有需要，随时联系我们。"
+        tags = ["用户已确认", "结束服务"]
+    elif analysis["primary_intent"].get("category") == "产品咨询":
+        latest_customer = next(
+            (item for item in reversed(messages) if item.get("role") == "customer"),
+            {},
+        )
+        latest_text = latest_customer.get("text") or ""
+        if primary == "色号选择":
+            reply = "收到，您主要在意色号是否适合自己的肤色和日常场景。我会结合您已经说过的肤色、唇部特点和妆效偏好给建议，不会只推荐热门色。"
+            tags = ["色号建议", "结合个人偏好"]
+        elif any(value in latest_text for value in ("敏感肌", "过敏", "刺激")):
+            reply = "理解您会在意敏感肌适配。是否适合需要结合产品完整成分和您的实际肤况判断；首次使用建议先在局部少量试用，如出现不适请立即停用。"
+            tags = ["敏感肌关注", "安全使用"]
+        elif primary == "辨别商品真伪":
+            reply = "理解您对真伪的担心。我会先核对订单渠道、包装批次和可验证的防伪信息；仅凭单张照片不能直接下结论，必要时会转人工复核。"
+            tags = ["真伪核对", "避免武断结论"]
+        else:
+            reply = f"收到，您想了解「{primary}」。我会根据品牌产品说明和您已经提供的信息核对，涉及成分适用性时不会做没有依据的保证。"
+            tags = ["产品咨询", "依据产品说明"]
     elif reship_resolved_message and customer_asking_logistics:
         shade_label = f"#{expected_shade[0]}{expected_shade[1]}".rstrip() if expected_shade else "正确色号"
         reply = (
@@ -598,6 +806,26 @@ def fallback_reply(bundle: dict[str, Any], analysis: dict[str, Any], tone: str =
     elif analysis["primary_intent"].get("category") == "不良反应":
         reply = "理解您现在会担心。您提供的不适情况已经完整记录，不需要重复说明。这边会交给专业团队跟进；请先停止使用该产品，如果症状加重或范围扩大，请及时就医。"
         tags = ["先关心用户", "不做诊断", "交专人跟进"]
+    elif analysis["primary_intent"].get("category") == "物流服务":
+        status = order.get("status") or "待查询"
+        tracking = " ".join(value for value in (order.get("carrier"), order.get("tracking_no")) if value)
+        reply = f"收到，您在查询物流进度。当前订单状态为「{status}」{f'，物流信息为 {tracking}' if tracking else ''}。我会以订单页的真实节点为准，不口头承诺尚未确认的时间。"
+        tags = ["物流查询", "引用真实节点"]
+    elif analysis["primary_intent"].get("category") == "退款打款":
+        ticket = tickets[0] if tickets else {}
+        status = ticket.get("status") or "待核对"
+        reply = f"收到，您在查询退款进度。当前相关记录状态为「{status}」。我会继续核对退款渠道和到账节点，不会让您重复提交已经提供的信息。"
+        tags = ["退款进度", "核对到账节点"]
+    elif analysis["primary_intent"].get("category") == "补发换货":
+        if primary == "处理商品破损":
+            reply = "抱歉商品到手时出现破损。我已经关联当前订单和您提供的信息，会先核对破损凭证与售后记录；已有照片不需要重复上传。"
+            tags = ["商品破损", "不重复索要凭证"]
+        elif primary == "处理错发漏发":
+            reply = "明白，您反馈收到的商品有错发或漏发。我会对照订单商品与实际收到的内容核对，确认前不会直接承诺补发，避免再次处理错误。"
+            tags = ["错发漏发", "先核对再处理"]
+        else:
+            reply = "明白，您这次希望办理换货。我会按换货诉求核对当前订单和售后记录，不会误按退款处理；已有信息无需重复说明。"
+            tags = ["换货诉求", "避免错误分流"]
     else:
         ticket = tickets[0] if tickets else {}
         status = ticket.get("status") or order.get("status") or "处理中"
@@ -659,7 +887,9 @@ def deterministic_quality_check(bundle: dict[str, Any], analysis: dict[str, Any]
     ):
         issues.append({"code": "unsupported_promise", "severity": "high", "message": "回复包含系统不能确保的结果或时效承诺。"})
 
-    if analysis["primary_intent"].get("category") == "不良反应":
+    if analysis["primary_intent"].get("category") == "不良反应" or any(
+        item.get("type") == "adverse_reaction" for item in analysis.get("risk_signals", [])
+    ):
         if re.search(r"(皮炎|确诊|治愈|自行缓解|\d+天.{0,4}恢复)", text):
             issues.append({"code": "medical_claim", "severity": "high", "message": "不良反应回复不应做诊断或恢复时间判断。"})
         if not any(term in text for term in ("停用", "停止使用", "专业团队", "就医")):

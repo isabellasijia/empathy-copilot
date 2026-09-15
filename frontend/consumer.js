@@ -70,7 +70,8 @@ function formatConsumerTime(value) {
 function consumerVersion(data) {
   const messages = data?.messages || [];
   const last = messages[messages.length - 1];
-  return last ? `${last.message_id}:${last.message_seq}` : "empty";
+  const serviceMode = data?.service_state?.service_mode || "human";
+  return last ? `${last.message_id}:${last.message_seq}:${serviceMode}` : `empty:${serviceMode}`;
 }
 
 function showConsumerToast(text) {
@@ -110,7 +111,7 @@ function renderConsumerMessages(messages, { announce = false } = {}) {
           : '<span class="message-image"><i data-lucide="image"></i><span>图片记录（原图未提供）</span></span>'
         : escapeConsumerHtml(message.text);
       return `<div class="consumer-message ${customer ? "customer" : "agent"}">
-        ${customer ? "" : '<div class="message-avatar">林</div>'}
+        ${customer ? "" : `<div class="message-avatar">${message.sender === "暖心客服" ? "AI" : "林"}</div>`}
         <div class="message-body"><div class="message-bubble">${body}</div><div class="message-time">${escapeConsumerHtml(formatConsumerTime(message.sent_at))}</div></div>
       </div>`;
     })
@@ -126,6 +127,12 @@ function renderConsumer(data, options = {}) {
   document.querySelector("#caseTitle").textContent = data.conversation.scene_minor || "售后咨询";
   document.querySelector("#customerName").textContent = `${data.conversation.buyer_nickname} · 服务单 ${data.conversation.session_id}`;
   document.querySelector("#syncState").textContent = "已连接";
+  const aiServing = data.service_state?.service_mode === "ai";
+  document.querySelector("#consumerAgentAvatar").textContent = aiServing ? "AI" : "林";
+  document.querySelector("#consumerAgentName").textContent = aiServing ? "暖心客服" : "林小稚";
+  document.querySelector("#deliveryState").textContent = aiServing
+    ? "AI 客服正在接待，需要时会转人工"
+    : "人工客服正在接待";
   renderConsumerOrder(data.order);
   renderConsumerMessages(data.messages, options);
 }

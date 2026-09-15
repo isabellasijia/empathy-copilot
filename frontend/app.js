@@ -17,6 +17,7 @@ const state = {
   pollBusy: false,
   draftedVersions: new Set(),
   refinementTimer: null,
+  unreadTotal: 0,
 };
 
 const tones = ["自然", "简洁", "更关心"];
@@ -126,7 +127,26 @@ function avatarColor(id) {
 function bundleVersion(bundle) {
   const messages = bundle?.messages || [];
   const last = messages[messages.length - 1];
-  return last ? `${last.message_id}:${last.message_seq}` : "empty";
+  const serviceMode = bundle?.service_state?.service_mode || "human";
+  return last ? `${last.message_id}:${last.message_seq}:${serviceMode}` : `empty:${serviceMode}`;
+}
+
+function decorateShowcaseConversations(items) {
+  return showcaseCases
+    .map((showcase) => {
+      const conversation = items.find((item) => item.session_id === showcase.id);
+      return conversation ? { ...conversation, showcase_label: showcase.label, showcase_icon: showcase.icon } : null;
+    })
+    .filter(Boolean);
+}
+
+function updateUnreadIndicators() {
+  state.unreadTotal = state.conversations.reduce((sum, item) => sum + Number(item.unread_count || 0), 0);
+  const badge = document.querySelector("#messageBadge");
+  badge.textContent = String(state.unreadTotal);
+  badge.hidden = state.unreadTotal === 0;
+  const statValues = document.querySelectorAll(".work-stat strong");
+  if (statValues[0]) statValues[0].textContent = String(state.unreadTotal);
 }
 
 function renderSystemState() {
@@ -149,13 +169,14 @@ function renderSystemState() {
   }
   document.querySelector("#riskBadge").textContent = String(health.open_risks || 0);
   const statValues = document.querySelectorAll(".work-stat strong");
-  if (statValues[0]) statValues[0].textContent = String(state.conversations.length);
+  if (statValues[0]) statValues[0].textContent = String(state.unreadTotal);
   if (statValues[1]) statValues[1].textContent = String(health.open_risks || 0);
   if (statValues[2]) statValues[2].textContent = String(health.overdue_commitments || 0);
   document.querySelector("#modelStateStat").textContent = health.ai.configured ? "在线" : "保障";
   document.querySelector("#modelStateStat").title = health.ai.configured
     ? "会话分析服务在线"
     : "本地确定性规则模式";
+  updateUnreadIndicators();
 }
 
 function renderConversationList(filter = "") {
@@ -185,7 +206,7 @@ function renderConversationList(filter = "") {
             <span class="conversation-name">${escapeHtml(item.buyer_nickname)}<span><i class="case-emoji" aria-hidden="true">${escapeHtml(item.showcase_icon || "💬")}</i>${escapeHtml(item.showcase_label || item.scene_major)}</span></span>
             <span class="conversation-preview">${escapeHtml(item.preview || item.scene_minor)}</span>
           </span>
-          <span class="conversation-meta">${escapeHtml(formatTime(item.last_message_at))}${item.open_risks ? `<span class="unread">${item.open_risks}</span>` : ""}</span>
+          <span class="conversation-meta">${escapeHtml(formatTime(item.last_message_at))}${item.unread_count ? `<span class="unread" aria-label="${item.unread_count} 条未读">${item.unread_count}</span>` : ""}</span>
         </button>`;
     })
     .join("");
@@ -199,6 +220,16 @@ function renderChat(bundle) {
   avatar.style.setProperty("--avatar", avatarColor(conversation.session_id));
   document.querySelector("#chatName").textContent = conversation.buyer_nickname;
   document.querySelector("#chatStatus").textContent = `● 在线 · ${conversation.session_id}`;
+  const serviceState = bundle.service_state || {};
+  const serviceButton = document.querySelector("#serviceModeButton");
+  const isAi = serviceState.service_mode === "ai";
+  serviceButton.className = `service-mode-button ${isAi ? "ai" : serviceState.handoff_reason ? "handoff" : "human"}`;
+  serviceButton.innerHTML = `<i data-lucide="${isAi ? "bot" : "headset"}"></i><span>${isAi ? "AI 接待中" : "人工接待中"}</span>`;
+  serviceButton.title = isAi
+    ? "点击由人工客服接管"
+    : serviceState.handoff_reason
+      ? `转人工原因：${serviceState.handoff_reason}。点击交回 AI 接待`
+      : "点击交回 AI 接待";
 
   const orderHtml = order
     ? `<div class="order-card">
@@ -220,7 +251,8 @@ function renderChat(bundle) {
               : '<div class="image-placeholder"><i data-lucide="image"></i></div>'}<div class="image-copy"><strong>${escapeHtml(message.text || "用户已提供图片")}</strong><span>${message.image_url ? "原图已同步，可点击查看" : "官方数据未附原图，仅保留上传记录"}</span></div></div>`
           : `<div>${escapeHtml(message.text)}</div>`;
       const bubble = `<div class="bubble">${body}<div class="bubble-time">${escapeHtml(formatTime(message.sent_at))} · <button class="evidence-button" data-evidence-id="${escapeHtml(message.message_id)}" type="button">查看来源</button></div></div>`;
-      return `<div class="bubble-row ${isAgent ? "agent" : "user"}">${isAgent ? bubble : `<div class="bubble-avatar">${escapeHtml((conversation.buyer_nickname || "客").slice(0, 1))}</div>${bubble}`}${isAgent ? '<div class="bubble-avatar">林</div>' : ""}</div>`;
+      const agentAvatar = message.sender === "暖心客服" ? "AI" : "林";
+      return `<div class="bubble-row ${isAgent ? "agent" : "user"}">${isAgent ? bubble : `<div class="bubble-avatar">${escapeHtml((conversation.buyer_nickname || "客").slice(0, 1))}</div>${bubble}`}${isAgent ? `<div class="bubble-avatar">${agentAvatar}</div>` : ""}</div>`;
     })
     .join("");
   const feed = document.querySelector("#chatFeed");
@@ -239,7 +271,8 @@ function renderCopilot(payload) {
   const riskLabels = { high: "重点注意", medium: "需要留意", none: "正常" };
   const emotionIcons = { 满意: "😊", 平稳: "🙂", 着急: "⏱️", 担心: "😟", 不满: "😕", 愤怒: "😠" };
   const emotion = analysis.emotion_state?.value || "待判断";
-  const emotionEscalated = emotion === "愤怒" || (analysis.emotion_state?.trend || "").includes("升级");
+  const emotionTrend = analysis.emotion_state?.trend || "";
+  const emotionEscalated = emotion === "愤怒" || (emotionTrend.includes("升级") && !emotionTrend.includes("无明显升级"));
   document.querySelector("#signalEmotion").textContent = `${emotion}${emotionEscalated ? " ↑" : ""}`;
   document.querySelector("#signalEmotion").classList.toggle("escalated", emotionEscalated);
   document.querySelector("#signalEmotionIcon").textContent = emotionIcons[emotion] || "💬";
@@ -485,6 +518,45 @@ function scheduleRefinement(sessionId, version, attempt = 0) {
   }, attempt < 3 ? 1000 : 1600);
 }
 
+async function markConversationRead(sessionId) {
+  try {
+    const result = await api(`/api/conversations/${encodeURIComponent(sessionId)}/read`, { method: "POST" });
+    const item = state.conversations.find((conversation) => conversation.session_id === sessionId);
+    if (item) item.unread_count = 0;
+    state.unreadTotal = Number(result.total_unread || 0);
+    renderConversationList(document.querySelector("#searchInput").value);
+    updateUnreadIndicators();
+  } catch {
+    // Reading a conversation must remain usable if the badge update fails.
+  }
+}
+
+async function switchServiceMode() {
+  if (!state.current) return;
+  const button = document.querySelector("#serviceModeButton");
+  const currentMode = state.current.bundle.service_state?.service_mode || "human";
+  const nextMode = currentMode === "ai" ? "human" : "ai";
+  setLoading(button, true);
+  try {
+    const serviceState = await api(`/api/conversations/${encodeURIComponent(state.activeId)}/service-mode`, {
+      method: "PATCH",
+      body: JSON.stringify({ mode: nextMode, reason: nextMode === "human" ? "客服主动接管" : null }),
+    });
+    state.current.bundle.service_state = serviceState;
+    const item = state.conversations.find((conversation) => conversation.session_id === state.activeId);
+    if (item) {
+      item.service_mode = serviceState.service_mode;
+      item.handoff_reason = serviceState.handoff_reason;
+    }
+    renderChat(state.current.bundle);
+    showToast(nextMode === "human" ? "已由人工客服接管" : "后续新消息将由 AI 优先接待");
+  } catch (error) {
+    showToast(error.message, "circle-alert");
+  } finally {
+    setLoading(button, false);
+  }
+}
+
 async function loadConversation(sessionId, force = false) {
   state.conversationLoading = true;
   state.activeId = sessionId;
@@ -506,6 +578,7 @@ async function loadConversation(sessionId, force = false) {
     renderChat(state.current.bundle);
     renderCopilot(state.current);
     updateUrl();
+    await markConversationRead(sessionId);
     if (state.current.analysis?.run?.pending) {
       scheduleRefinement(state.activeId, state.activeVersion);
     } else {
@@ -529,7 +602,13 @@ async function pollStaffConversation() {
 
   state.pollBusy = true;
   try {
-    const payload = await api(`/api/conversations/${encodeURIComponent(state.activeId)}/bundle`);
+    const [payload, summaries] = await Promise.all([
+      api(`/api/conversations/${encodeURIComponent(state.activeId)}/bundle`),
+      api("/api/conversations?limit=200"),
+    ]);
+    state.conversations = decorateShowcaseConversations(summaries.items);
+    renderConversationList(document.querySelector("#searchInput").value);
+    updateUnreadIndicators();
     const nextVersion = bundleVersion(payload.bundle);
     if (nextVersion === state.activeVersion) return;
 
@@ -829,6 +908,12 @@ function setupEvents() {
   });
   document.querySelector("#regenerateReply").addEventListener("click", regenerateReply);
   document.querySelector("#sendReply").addEventListener("click", sendReply);
+  document.querySelector("#serviceModeButton").addEventListener("click", switchServiceMode);
+  document.querySelector("#messageNav").addEventListener("click", () => {
+    const firstUnread = state.conversations.find((item) => Number(item.unread_count || 0) > 0);
+    if (firstUnread) loadConversation(firstUnread.session_id);
+    else showToast("当前没有未读消息");
+  });
   document.querySelector("#replyInput").addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
@@ -889,13 +974,8 @@ async function bootstrap() {
   try {
     const [health, conversations] = await Promise.all([api("/api/health"), api("/api/conversations?limit=200")]);
     state.health = health;
-    const allConversations = conversations.items;
-    state.conversations = showcaseCases
-      .map((showcase) => {
-        const conversation = allConversations.find((item) => item.session_id === showcase.id);
-        return conversation ? { ...conversation, showcase_label: showcase.label, showcase_icon: showcase.icon } : null;
-      })
-      .filter(Boolean);
+    state.conversations = decorateShowcaseConversations(conversations.items);
+    state.unreadTotal = state.conversations.reduce((sum, item) => sum + Number(item.unread_count || 0), 0);
     if (!state.conversations.some((item) => item.session_id === state.activeId)) {
       state.activeId = state.conversations[0]?.session_id || "S00018";
     }

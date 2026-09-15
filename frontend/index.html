@@ -774,7 +774,7 @@
         <div class="brand-mark" aria-hidden="true"><i data-lucide="sparkles"></i></div>
         <nav class="rail-nav" aria-label="工作台功能">
           <button class="rail-item active" id="serviceNav" type="button" aria-current="page"><i data-lucide="messages-square"></i><span>服务台</span></button>
-          <button class="rail-item" type="button"><i data-lucide="bell"></i><span>消息</span><span class="badge">3</span></button>
+          <button class="rail-item" id="messageNav" type="button"><i data-lucide="bell"></i><span>消息</span><span class="badge" id="messageBadge" hidden>0</span></button>
           <button class="rail-item" type="button"><i data-lucide="contact-round"></i><span>客户</span></button>
           <button class="rail-item" type="button"><i data-lucide="clipboard-list"></i><span>工单</span></button>
           <button class="rail-item" id="riskNav" type="button"><i data-lucide="shield-alert"></i><span>风险台</span><span class="badge" id="riskBadge">0</span></button>
@@ -789,7 +789,7 @@
           <div class="account-copy"><strong>林小稚 · 客服组</strong><span>● 在线</span></div>
         </div>
         <div class="work-stats">
-          <div class="work-stat"><strong>0</strong><span>重点会话</span></div>
+          <div class="work-stat"><strong>0</strong><span>未读消息</span></div>
           <div class="work-stat"><strong>0</strong><span>风险待办</span></div>
           <div class="work-stat"><strong>0</strong><span>承诺待跟</span></div>
           <div class="work-stat positive"><strong id="modelStateStat">…</strong><span>助手状态</span></div>
@@ -822,6 +822,7 @@
         <header class="chat-head">
           <div class="chat-person"><div class="customer-avatar" id="chatAvatar" style="--avatar:#c2876d">陈</div><div><strong id="chatName">陈雨桐</strong><span id="chatStatus">● 在线 · 天猫</span></div></div>
           <div class="chat-actions">
+            <button class="service-mode-button human" id="serviceModeButton" type="button" title="切换接待方式"><i data-lucide="headset"></i><span>人工接待中</span></button>
             <button class="chat-action" type="button" title="客户档案" aria-label="查看客户档案"><i data-lucide="contact"></i></button>
             <button class="chat-action" type="button" title="历史订单" aria-label="查看历史订单"><i data-lucide="receipt-text"></i></button>
             <button class="chat-action" type="button" title="更多" aria-label="更多会话操作"><i data-lucide="ellipsis"></i></button>
