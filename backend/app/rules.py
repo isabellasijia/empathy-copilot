@@ -530,6 +530,7 @@ def build_memory(bundle: dict[str, Any]) -> list[dict[str, Any]]:
                     "label": "图片凭证已提供",
                     "value": message["text"] or "用户已上传图片",
                     "status": "confirmed",
+                    "display_status": "已提供",
                     "source_id": message["message_id"],
                     "source_type": "聊天",
                     "event_time": message.get("sent_at"),
@@ -545,6 +546,7 @@ def build_memory(bundle: dict[str, Any]) -> list[dict[str, Any]]:
                 "label": f"{ticket.get('ticket_kind') or ''}工单",
                 "value": " / ".join(value for value in detail_parts if value),
                 "status": "disputed" if "冲突" in (ticket.get("status") or "") else "confirmed",
+                "display_status": ticket.get("status") or "已记录",
                 "source_id": ticket["ticket_id"],
                 "source_type": ticket.get("source_sheet") or "工单",
                 "event_time": ticket.get("created_at"),
@@ -558,6 +560,7 @@ def build_memory(bundle: dict[str, Any]) -> list[dict[str, Any]]:
                 "label": "服务承诺",
                 "value": commitment["content"],
                 "status": commitment["status"],
+                "display_status": commitment["status"],
                 "source_id": commitment.get("source_message_id") or commitment.get("evidence_id"),
                 "source_type": "聊天",
                 "event_time": commitment.get("created_at"),
@@ -584,7 +587,13 @@ def build_customer_profile(bundle: dict[str, Any]) -> dict[str, Any]:
         )
         traits.append(
             {
-                "label": "肤质关注" if "皮" in term or "肌肤" in term else "使用特征",
+                "label": (
+                    "肤色"
+                    if term in {"暖黄皮", "冷白皮"}
+                    else "唇部特征"
+                    if term == "唇纹深"
+                    else "肤质"
+                ),
                 "value": term,
                 "evidence": [evidence],
             }
@@ -610,34 +619,6 @@ def build_customer_profile(bundle: dict[str, Any]) -> dict[str, Any]:
                     "evidence": [shade_message["message_id"]],
                 }
             )
-
-    recent_text = " ".join(message["text"] for message in customer_messages[-4:])
-    if any(word in recent_text for word in URGENT_WORDS):
-        evidence = next(
-            message["message_id"]
-            for message in reversed(customer_messages)
-            if any(word in message["text"] for word in URGENT_WORDS)
-        )
-        traits.append(
-            {
-                "label": "沟通关注",
-                "value": "希望及时同步进度",
-                "evidence": [evidence],
-            }
-        )
-    if any(word in recent_text for word in NEGATIVE_WORDS):
-        evidence = next(
-            message["message_id"]
-            for message in reversed(customer_messages)
-            if any(word in message["text"] for word in NEGATIVE_WORDS)
-        )
-        traits.append(
-            {
-                "label": "服务关注",
-                "value": "需要明确回应处理差错",
-                "evidence": [evidence],
-            }
-        )
 
     unique_traits: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
@@ -903,7 +884,9 @@ def fallback_reply(bundle: dict[str, Any], analysis: dict[str, Any], tone: str =
         reply = f"理解您在等待处理结果。我已核对您的订单和服务记录，当前{ticket_text}状态为「{status}」。已经提供的信息不需要重复发送，我会按当前进度继续跟进。"
         tags = ["已核对记录", "不重复追问", "说明下一步"]
 
-    if tone == "简洁":
+    if tone == "简洁" and analysis["primary_intent"].get("category") == "不良反应":
+        reply = "理解您会担心，您提供的不适情况已记录，无需重复说明。请先停用产品；如症状加重或范围扩大，请及时就医，我们会交给专业团队跟进。"
+    elif tone == "简洁":
         sentences = [part for part in re.split(r"(?<=[。！？])", reply) if part.strip()]
         reply = "".join(sentences[:3])
     elif tone == "更关心" and not reply.startswith("真的"):

@@ -7,11 +7,13 @@ const state = {
   current: null,
   risks: null,
   selectedRiskId: Number(new URL(window.location.href).searchParams.get("risk")) || null,
-  riskFilter: ["all", "high", "unassigned"].includes(new URL(window.location.href).searchParams.get("filter"))
+  riskFilter: ["all", "pending", "processing", "attention", "closed"].includes(new URL(window.location.href).searchParams.get("filter"))
     ? new URL(window.location.href).searchParams.get("filter")
     : "all",
   initialView: new URL(window.location.href).searchParams.get("view") === "risk" ? "risk" : "service",
-  draftToneIndex: 0,
+  revisionSessionId: null,
+  draftEdited: false,
+  noteEdited: false,
   activeVersion: null,
   conversationLoading: false,
   pollBusy: false,
@@ -23,7 +25,6 @@ const state = {
   snoozedIds: new Set(),
 };
 
-const tones = ["自然", "简洁", "更关心"];
 const showcaseCases = [
   { id: "S00018", label: "跨系统核对", icon: "🧾" },
   { id: "S00001", label: "图片凭证", icon: "📷" },
@@ -102,6 +103,7 @@ function setLoading(button, loading) {
 }
 
 function updateUrl(panel = "assist") {
+  if (document.querySelector(".app")?.classList.contains("risk-mode")) return;
   const url = new URL(window.location.href);
   url.searchParams.set("case", state.activeId);
   url.searchParams.delete("view");
@@ -193,8 +195,8 @@ function renderConversationList(filter = "") {
       .includes(normalized);
     if (!matchesSearch) return false;
     if (state.inboxView === "later") return state.snoozedIds.has(item.session_id);
-    if (state.inboxView === "completed") return resolvedPattern.test(item.preview || "");
-    return !state.snoozedIds.has(item.session_id);
+    if (state.inboxView === "completed") return Boolean(item.is_completed) || resolvedPattern.test(item.preview || "");
+    return !state.snoozedIds.has(item.session_id) && !item.is_completed;
   });
   const viewLabels = { all: "重点会话", later: "稍后处理", completed: "已完成" };
   document.querySelector(".conversation-summary strong").textContent = `${viewLabels[state.inboxView] || "重点会话"} ${items.length}`;
@@ -271,14 +273,14 @@ function renderChat(bundle) {
   refreshIcons();
 }
 
-function sourceButton(sourceId, label = "查看原始证据") {
+function sourceButton(sourceId, label = "查看原始证据", compact = false) {
   if (!sourceId) return "";
-  return `<button class="source-link" data-evidence-id="${escapeHtml(sourceId)}" type="button"><i data-lucide="file-search"></i>${escapeHtml(label)}</button>`;
+  const accessibleLabel = escapeHtml(label);
+  return `<button class="source-link${compact ? " source-link-icon" : ""}" data-evidence-id="${escapeHtml(sourceId)}" type="button" title="${accessibleLabel}" aria-label="${accessibleLabel}"><i data-lucide="file-search"></i>${compact ? "" : accessibleLabel}</button>`;
 }
 
 function renderCopilot(payload) {
   const { bundle, analysis, draft } = payload;
-  const riskLabels = { high: "重点注意", medium: "需要留意", none: "正常" };
   const emotionIcons = { 满意: "😊", 平稳: "🙂", 着急: "⏱️", 担心: "😟", 不满: "😕", 愤怒: "😠" };
   const emotion = analysis.emotion_state?.value || "待判断";
   const emotionTrend = analysis.emotion_state?.trend || "";
@@ -286,7 +288,6 @@ function renderCopilot(payload) {
   document.querySelector("#signalEmotion").textContent = `${emotion}${emotionEscalated ? " ↑" : ""}`;
   document.querySelector("#signalEmotion").classList.toggle("escalated", emotionEscalated);
   document.querySelector("#signalEmotionIcon").textContent = emotionIcons[emotion] || "💬";
-  document.querySelector("#signalRisk").textContent = riskLabels[analysis.risk_level] || "需关注";
   const needsClarification = Boolean(analysis.primary_intent?.requires_clarification);
   const intentLabel = needsClarification ? "需要确认" : analysis.primary_intent?.value || "待确认";
   document.querySelector("#signalStatus").textContent = intentLabel;
@@ -294,9 +295,12 @@ function renderCopilot(payload) {
   const resolutionScore = Math.max(0, Math.min(Number(resolution.score) || 0, 100));
   document.querySelector("#resolutionStage").textContent = resolution.stage || "待确认";
   document.querySelector("#resolutionScore").textContent = `${resolutionScore}%`;
-  document.querySelector("#resolutionFill").style.transform = `scaleX(${resolutionScore / 100})`;
   document.querySelector("#resolutionSummary").textContent = resolution.summary || "正在整理当前处理情况。";
   document.querySelector("#resolutionProgress").setAttribute("aria-valuenow", String(resolutionScore));
+  const completedSegments = Math.round(resolutionScore / 20);
+  document.querySelectorAll("#resolutionProgress span").forEach((segment, index) => {
+    segment.className = index < completedSegments - 1 ? "complete" : index === completedSegments - 1 ? "current" : "";
+  });
   const run = analysis.run || {};
   const assistantSubtitle = document.querySelector("#assistantSubtitle");
   assistantSubtitle.textContent = "已整理当前会话";
@@ -316,13 +320,8 @@ function renderCopilot(payload) {
   }
 
   const summary = document.querySelector("#needSummary");
-  summary.className = `summary-callout${analysis.risk_level === "high" ? " alert" : ""}`;
-  summary.innerHTML = `<i data-lucide="${analysis.risk_level === "high" ? "triangle-alert" : "message-circle-heart"}"></i><span>${escapeHtml(analysis.summary)}</span>`;
-
-  const secondary = (analysis.secondary_intents || []).map((item) => item.value).join("、") || "暂无";
-  document.querySelector("#intentDetails").innerHTML = `
-    <div><small>当前问题</small><strong>${escapeHtml(intentLabel)}</strong></div>
-    <div><small>同时关注</small><strong>${escapeHtml(secondary)}</strong></div>`;
+  summary.textContent = analysis.summary;
+  document.querySelector(".signal-problem").classList.toggle("alert", analysis.risk_level === "high");
 
   const visualObservations = analysis.visual_observations || [];
   const visualSection = document.querySelector("#visualSection");
@@ -358,30 +357,40 @@ function renderCopilot(payload) {
     )
     .join("");
 
-  document.querySelector("#suggestedReply").textContent = draft.reply_draft;
+  document.querySelector("#suggestedReply").value = draft.reply_draft;
+  state.draftEdited = false;
   document.querySelector("#replyTags").innerHTML = (draft.tags || []).slice(0, 2)
     .map((tag, index) => `<span class="chip${index === 0 ? " blue" : ""}">${escapeHtml(tag)}</span>`)
     .join("");
   document.querySelector("#suggestionSource").textContent =
     draft.provider === "qwen" ? "已使用智能生成，发送前仍会独立检查" : "当前为可离线使用的建议回复";
+  if (state.revisionSessionId !== state.activeId) {
+    state.revisionSessionId = state.activeId;
+    document.querySelector("#revisionInstruction").value = "";
+    setRegeneratePopover(false);
+  }
 
   const memory = analysis.memory || [];
   const profile = analysis.customer_profile || {};
-  document.querySelector("#profileSummary").textContent = profile.summary || "暂未发现需要保留的服务偏好。";
-  document.querySelector("#profileTraits").innerHTML = (profile.traits || [])
-    .map((item) => `<div class="profile-trait"><small>${escapeHtml(item.label)}</small><strong>${escapeHtml(item.value)}</strong>${sourceButton(item.evidence?.[0], "查看依据")}</div>`)
+  const profileTraits = profile.traits || [];
+  document.querySelector("#profileCount").textContent = `${profileTraits.length} 项`;
+  document.querySelector("#profileTraits").innerHTML = profileTraits
+    .map((item) => `<div class="profile-trait"><div class="profile-trait-copy"><small>${escapeHtml(item.label)}</small><strong>${escapeHtml(item.value)}</strong></div>${sourceButton(item.evidence?.[0], `查看${item.label}依据`, true)}</div>`)
     .join("") || '<div class="api-empty">本轮暂无明确偏好</div>';
-  document.querySelector("#profileScope").textContent = profile.scope || "仅展示与当前服务有关的信息";
   document.querySelector("#journeyTimeline").innerHTML = memory
     .filter((item) => item.kind === "service_event" || item.kind === "commitment")
-    .map(
-      (item, index) => `<div class="trace-step"><div class="trace-index">${index + 1}</div><div class="trace-copy"><strong>${escapeHtml(item.label)}</strong><span>${escapeHtml(item.value)}</span>${sourceButton(item.source_id)}</div></div>`,
-    )
+    .sort((left, right) => new Date(left.event_time || 0) - new Date(right.event_time || 0))
+    .map((item) => {
+      const status =
+        item.display_status ||
+        ({ confirmed: "已记录", disputed: "待核对" }[item.status] || item.status || "已记录");
+      return `<button class="journey-event" type="button" data-evidence-id="${escapeHtml(item.source_id)}" aria-label="查看${escapeHtml(item.label)}详细记录"><div class="journey-marker" aria-hidden="true"></div><time>${escapeHtml(formatTime(item.event_time))}</time><strong>${escapeHtml(item.label)}</strong><span>${escapeHtml(status)}</span></button>`;
+    })
     .join("") || '<div class="api-empty">暂无跨系统服务事件</div>';
   document.querySelector("#knownFacts").innerHTML = memory
     .filter((item) => item.kind === "service_fact")
     .map(
-      (item) => `<div class="plain-row"><div class="plain-row-icon"><i data-lucide="check"></i></div><div class="plain-row-copy"><strong>${escapeHtml(item.label)}</strong><span>${escapeHtml(item.value)}</span>${sourceButton(item.source_id)}</div></div>`,
+      (item) => `<div class="plain-row known-fact-row"><div class="plain-row-icon"><i data-lucide="check"></i></div><div class="plain-row-copy"><strong>${escapeHtml(item.label)}</strong><span>${escapeHtml(item.value)}</span></div>${sourceButton(item.source_id, "查看原始证据", true)}</div>`,
     )
     .join("") || '<div class="api-empty">暂无已确认信息</div>';
 
@@ -406,17 +415,13 @@ function renderCopilot(payload) {
     )
     .join("") || '<div class="api-empty">当前仍在接待阶段</div>';
 
-  const followupRequired = analysis.risk_level !== "none" || bundle.commitments.some((item) => item.status !== "已关闭");
-  const followupBadge = document.querySelector("#followupBadge");
-  followupBadge.textContent = analysis.risk_level === "high" ? "必须" : followupRequired ? "需要" : "无需";
-  followupBadge.className = `status-pill${analysis.risk_level === "high" ? " danger" : followupRequired ? " warn" : ""}`;
-  const followupSummary = document.querySelector("#followupSummary");
-  followupSummary.className = `summary-callout${analysis.risk_level === "high" ? " alert" : ""}`;
-  followupSummary.innerHTML = `<i data-lucide="${followupRequired ? "bell-ring" : "circle-check"}"></i><span>${escapeHtml(followupRequired ? "本次服务存在待跟进事项，需要指定负责人并保留处理结果。" : "当前有明确处理方案，暂无需主管介入。")}</span>`;
-  [document.querySelector("#createTicket"), document.querySelector("#followupAction")].forEach((button) => {
-    button.textContent = followupRequired ? "前往风险台跟进" : "添加跟进提醒";
-    button.className = `risk-action${analysis.risk_level === "high" ? "" : " neutral"}`;
-  });
+  const serviceNote = bundle.service_note;
+  if (!state.noteEdited) {
+    document.querySelector("#serviceNote").value = serviceNote?.note || "";
+  }
+  document.querySelector("#serviceNoteMeta").textContent = serviceNote
+    ? `${serviceNote.actor} · ${formatTime(serviceNote.updated_at)}`
+    : "本轮服务记录";
 
   refreshIcons();
 }
@@ -433,7 +438,8 @@ async function refreshDynamicDraft(sessionId, version) {
     });
     if (state.activeId !== sessionId || state.activeVersion !== version) return;
     state.current.draft = draft;
-    document.querySelector("#suggestedReply").textContent = draft.reply_draft;
+    if (state.draftEdited) return;
+    document.querySelector("#suggestedReply").value = draft.reply_draft;
     document.querySelector("#replyTags").innerHTML = (draft.tags || []).slice(0, 2)
       .map((tag, index) => `<span class="chip${index === 0 ? " blue" : ""}">${escapeHtml(tag)}</span>`)
       .join("");
@@ -508,6 +514,7 @@ async function switchServiceMode() {
 async function loadConversation(sessionId, force = false) {
   const loadId = ++state.loadSequence;
   state.conversationLoading = true;
+  if (state.activeId !== sessionId || force) state.noteEdited = false;
   state.activeId = sessionId;
   renderConversationList(document.querySelector("#searchInput").value);
   try {
@@ -582,30 +589,47 @@ async function pollStaffConversation() {
 async function regenerateReply() {
   const button = document.querySelector("#regenerateReply");
   setLoading(button, true);
-  const tone = tones[state.draftToneIndex % tones.length];
-  state.draftToneIndex += 1;
+  const instruction = document.querySelector("#revisionInstruction").value.trim();
+  const tone = /简洁|简短|精简/.test(instruction)
+    ? "简洁"
+    : /共情|关心|温和/.test(instruction)
+      ? "更关心"
+      : "自然";
   const sessionId = state.activeId;
   const version = state.activeVersion;
   try {
     const draft = await api(`/api/conversations/${encodeURIComponent(sessionId)}/draft`, {
       method: "POST",
-      body: JSON.stringify({ tone }),
+      body: JSON.stringify({ tone, instruction }),
     });
     if (state.activeId !== sessionId || state.activeVersion !== version) return;
     state.current.draft = draft;
-    document.querySelector("#suggestedReply").textContent = draft.reply_draft;
+    document.querySelector("#suggestedReply").value = draft.reply_draft;
+    state.draftEdited = false;
     document.querySelector("#replyTags").innerHTML = (draft.tags || []).slice(0, 2)
       .map((tag, index) => `<span class="chip${index === 0 ? " blue" : ""}">${escapeHtml(tag)}</span>`)
       .join("");
-    document.querySelector("#suggestionSource").textContent = draft.provider === "qwen"
-      ? `已结合当前记录生成 · ${draft.latency_ms || 0} ms`
-      : "已使用离线备用回复";
-    showToast(`已换成「${tone}」说法`);
+    document.querySelector("#suggestionSource").textContent = draft.provider?.startsWith("qwen")
+      ? `已按修改建议生成 · ${draft.latency_ms || 0} ms`
+      : instruction
+        ? "已按当前可支持的方向调整离线回复"
+        : "已重新生成离线回复";
+    setRegeneratePopover(false);
+    showToast(instruction ? "已按修改建议重新生成" : "已重新生成回复");
   } catch (error) {
     showToast(error.message, "circle-alert");
   } finally {
     setLoading(button, false);
   }
+}
+
+function setRegeneratePopover(open) {
+  const control = document.querySelector("#regenerateControl");
+  const trigger = document.querySelector("#regenerateTrigger");
+  const popover = document.querySelector("#revisionPopover");
+  control.classList.toggle("open", open);
+  trigger.setAttribute("aria-expanded", String(open));
+  popover.setAttribute("aria-hidden", String(!open));
 }
 
 function showQualityIssues(result) {
@@ -650,6 +674,61 @@ async function sendReply() {
   }
 }
 
+async function saveServiceNote() {
+  const input = document.querySelector("#serviceNote");
+  const button = document.querySelector("#saveServiceNote");
+  const note = input.value.trim();
+  if (!note) {
+    showToast("请先填写本轮服务备注", "circle-alert");
+    input.focus();
+    return;
+  }
+  setLoading(button, true);
+  try {
+    const completedSessionId = state.activeId;
+    const currentIndex = state.conversations.findIndex(
+      (item) => item.session_id === completedSessionId,
+    );
+    const saved = await api(`/api/conversations/${encodeURIComponent(state.activeId)}/note`, {
+      method: "PUT",
+      body: JSON.stringify({ note, actor: "林小稚", complete: true }),
+    });
+    state.current.bundle.service_note = saved;
+    state.noteEdited = false;
+    document.querySelector("#serviceNoteMeta").textContent = `${saved.actor} · ${formatTime(saved.updated_at)}`;
+    const completedItem = state.conversations.find(
+      (item) => item.session_id === completedSessionId,
+    );
+    if (completedItem) completedItem.is_completed = 1;
+    const orderedCandidates = [
+      ...state.conversations.slice(currentIndex + 1),
+      ...state.conversations.slice(0, Math.max(currentIndex, 0)),
+    ];
+    const next = orderedCandidates.find(
+      (item) => !item.is_completed && !state.snoozedIds.has(item.session_id),
+    );
+    document.querySelector("#searchInput").value = "";
+    state.inboxView = "all";
+    document.querySelectorAll("[data-inbox-view]").forEach((item) => {
+      const active = item.dataset.inboxView === "all";
+      item.classList.toggle("active", active);
+      item.setAttribute("aria-pressed", String(active));
+    });
+    renderConversationList();
+    if (next) {
+      document.querySelector('.copilot-tab[data-panel="assist"]').click();
+      await loadConversation(next.session_id);
+      showToast("本轮接待已结束，已切换到下一位客户");
+    } else {
+      showToast("本轮接待已结束，当前没有下一位待处理客户");
+    }
+  } catch (error) {
+    showToast(error.message, "circle-alert");
+  } finally {
+    setLoading(button, false);
+  }
+}
+
 async function openEvidence(evidenceId) {
   const dialog = document.querySelector("#evidenceDialog");
   document.querySelector("#evidenceTitle").textContent = "正在读取";
@@ -657,10 +736,32 @@ async function openEvidence(evidenceId) {
   dialog.showModal();
   try {
     const evidence = await api(`/api/evidence/${encodeURIComponent(evidenceId)}`);
+    const context = evidence.conversation_context || [];
+    const conversationHtml = context.length
+      ? `<section class="evidence-conversation" aria-labelledby="evidenceConversationTitle">
+          <h3 id="evidenceConversationTitle">相关对话</h3>
+          <div class="evidence-chat">${context
+            .map((item) => {
+              const isAgent = item.role === "agent";
+              const avatar = isAgent ? (item.sender === "暖心客服" ? "AI" : "林") : "客";
+              const content = item.is_key
+                ? `<strong class="evidence-bubble-text">${escapeHtml(item.text)}</strong>`
+                : `<div class="evidence-bubble-text">${escapeHtml(item.text)}</div>`;
+              const bubble = `<div class="bubble">${item.is_key ? '<span class="evidence-key-label">关键对话</span>' : ""}${content}<div class="bubble-time">${escapeHtml(formatTime(item.sent_at))}</div></div>`;
+              return `<div class="bubble-row evidence-chat-row ${isAgent ? "agent" : "user"}${item.is_key ? " key" : ""}">${isAgent ? bubble : `<div class="bubble-avatar">${avatar}</div>${bubble}`}${isAgent ? `<div class="bubble-avatar">${avatar}</div>` : ""}</div>`;
+            })
+            .join("")}</div>
+        </section>`
+      : "";
+    const summaryHtml =
+      evidence.source_type === "聊天" && context.length
+        ? ""
+        : `<div class="evidence-quote">${escapeHtml(evidence.content)}</div>`;
     document.querySelector("#evidenceTitle").textContent = evidence.title;
     document.querySelector("#evidenceContent").innerHTML = `
       ${evidence.media_url ? `<a class="evidence-media" href="${escapeHtml(evidence.media_url)}" target="_blank" rel="noopener"><img src="${escapeHtml(evidence.media_url)}" alt="原始证据图片" width="320" height="220" /><span>打开原图</span></a>` : ""}
-      <div class="evidence-quote">${escapeHtml(evidence.content)}</div>
+      ${summaryHtml}
+      ${conversationHtml}
       <div class="evidence-meta">
         <div><small>证据 ID</small><strong>${escapeHtml(evidence.id)}</strong></div>
         <div><small>来源</small><strong>${escapeHtml(evidence.source_sheet)}</strong></div>
@@ -693,41 +794,73 @@ function setView(view) {
 
 function riskItems() {
   const items = state.risks?.risks || [];
-  if (state.riskFilter === "high") return items.filter((item) => item.severity === "high");
-  if (state.riskFilter === "unassigned") return items.filter((item) => !item.owner);
-  return items;
+  if (state.riskFilter === "pending") return items.filter((item) => item.status === "待处理");
+  if (state.riskFilter === "processing") return items.filter((item) => ["处理中", "待回访"].includes(item.status));
+  if (state.riskFilter === "attention") return items.filter((item) => item.needs_intervention);
+  if (state.riskFilter === "closed") return items.filter((item) => item.status === "已关闭");
+  return items.filter((item) => item.status !== "已关闭");
+}
+
+function riskWaitLabel(minutes) {
+  const value = Number(minutes) || 0;
+  if (value < 1) return "刚刚更新";
+  if (value < 60) return `未更新 ${value} 分钟`;
+  if (value < 1440) return `未更新 ${Math.floor(value / 60)} 小时`;
+  return `未更新 ${Math.floor(value / 1440)} 天`;
+}
+
+function setRiskFilter(filter) {
+  state.riskFilter = filter;
+  document.querySelectorAll("[data-risk-filter]").forEach((button) => {
+    const active = button.dataset.riskFilter === filter;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+  const items = riskItems();
+  if (!items.some((item) => item.id === state.selectedRiskId)) {
+    state.selectedRiskId = items[0]?.id || null;
+  }
+  renderRiskKpis();
+  renderRiskTable();
+  renderRiskDetail();
+  updateRiskUrl();
 }
 
 function renderRiskKpis() {
-  const summary = state.risks?.summary || { open: 0, high: 0, unassigned: 0, commitments: 0 };
+  const summary = state.risks?.summary || { pending: 0, processing: 0, attention: 0, closed_today: 0 };
   document.querySelector("#riskKpis").innerHTML = [
-    ["待处理事件", summary.open, "danger"],
-    ["高风险", summary.high, "danger"],
-    ["待分配", summary.unassigned, "warning"],
-    ["进行中承诺", summary.commitments, ""],
+    ["待响应", summary.pending, "pending", "inbox", ""],
+    ["处理中", summary.processing, "processing", "loader-circle", ""],
+    ["需要管理者介入", summary.attention, "attention", "triangle-alert", "warning"],
+    ["今日已关闭", summary.closed_today, "closed", "circle-check", "success"],
   ]
-    .map(([label, value, tone]) => `<div class="risk-kpi ${tone}"><small>${label}</small><strong>${value}</strong></div>`)
+    .map(
+      ([label, value, filter, icon, tone]) =>
+        `<button class="risk-kpi ${tone}${state.riskFilter === filter ? " active" : ""}" type="button" data-kpi-filter="${filter}"><i data-lucide="${icon}"></i><span><small>${label}</small><strong>${value}</strong></span></button>`,
+    )
     .join("");
+  refreshIcons();
 }
 
 function renderRiskTable() {
   const items = riskItems();
-  document.querySelector("#riskListMeta").textContent = `共 ${items.length} 条，按风险程度排序`;
+  const filterLabels = { all: "进行中", pending: "待响应", processing: "处理中", attention: "需介入", closed: "已关闭" };
+  document.querySelector("#riskListMeta").textContent = `${filterLabels[state.riskFilter]} ${items.length} 条 · 异常优先`;
   const table = document.querySelector("#riskTable");
   if (!items.length) {
-    table.innerHTML = '<div class="api-empty">当前筛选下没有待处理事件。</div>';
+    table.innerHTML = '<div class="api-empty">当前队列没有事件。</div>';
     return;
   }
   table.innerHTML = `
-    <div class="risk-table-head"><span>等级</span><span>事件</span><span>客户 / 场景</span><span>负责人</span><span>截止时间</span></div>
+    <div class="risk-table-head"><span>类型</span><span>客户与事件</span><span>处理队列</span><span>状态与负责人</span><span>最近更新</span></div>
     ${items
       .map(
-        (item) => `<button class="risk-row${item.id === state.selectedRiskId ? " selected" : ""}" type="button" data-risk-id="${item.id}">
-          <span class="severity ${item.severity}">${item.severity === "high" ? "高" : "中"}</span>
-          <span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.detail)}</small><small class="risk-compact-meta">${escapeHtml(item.buyer_nickname)} · ${escapeHtml(item.scene_minor)} · ${escapeHtml(item.owner || "待分配")}</small></span>
-          <span><strong>${escapeHtml(item.buyer_nickname)}</strong><small>${escapeHtml(item.session_id)} · ${escapeHtml(item.scene_minor)}</small></span>
-          <span class="risk-status${item.owner ? "" : " unassigned"}">${escapeHtml(item.owner || "待分配")}</span>
-          <span class="risk-status">${escapeHtml(formatTime(item.deadline))}</span>
+        (item) => `<button class="risk-row${item.id === state.selectedRiskId ? " selected" : ""}${item.needs_intervention ? " needs-intervention" : ""}" type="button" data-risk-id="${item.id}">
+          <span class="risk-type-mark ${item.severity}">${escapeHtml(item.category)}</span>
+          <span><strong>${escapeHtml(item.buyer_nickname)} · ${escapeHtml(item.title)}</strong><small>${escapeHtml(item.scene_minor)} · ${escapeHtml(item.session_id)}</small><small class="risk-compact-meta">${escapeHtml(item.queue)} · ${escapeHtml(item.display_status)}</small></span>
+          <span class="risk-queue">${escapeHtml(item.queue)}</span>
+          <span><strong class="risk-status">${escapeHtml(item.display_status)}</strong><small>${escapeHtml(item.owner || "系统分配中")}</small></span>
+          <span class="risk-wait${item.needs_intervention ? " alert" : ""}">${escapeHtml(item.status === "已关闭" ? formatTime(item.updated_at) : riskWaitLabel(item.waiting_minutes))}</span>
         </button>`,
       )
       .join("")}`;
@@ -737,35 +870,47 @@ function renderRiskDetail() {
   const item = (state.risks?.risks || []).find((risk) => risk.id === state.selectedRiskId);
   const target = document.querySelector("#riskDetail");
   if (!item) {
-    target.innerHTML = '<div class="empty-detail"><i data-lucide="mouse-pointer-click"></i><strong>选择一条风险事件</strong><span>查看证据、负责人和处理时限</span></div>';
+    target.innerHTML = '<div class="empty-detail"><i data-lucide="mouse-pointer-click"></i><strong>选择一条风险事件</strong><span>查看事实、证据和协作进展</span></div>';
     refreshIcons();
     return;
   }
+  const commitments = (state.risks?.commitments || []).filter((commitment) => commitment.session_id === item.session_id);
+  const factList = (facts, emptyText) =>
+    facts.length
+      ? `<ul class="risk-fact-list">${facts.map((fact) => `<li><strong>${escapeHtml(fact.label)}</strong><span>${escapeHtml(fact.value)}</span></li>`).join("")}</ul>`
+      : `<p class="risk-empty-copy">${emptyText}</p>`;
+  let actionPanel = `<div class="risk-action-panel"><p>事件已由系统分配给 ${escapeHtml(item.owner || "客服")}，管理者可监控响应，并在异常时催办或重新分配。</p><label for="riskProgressNote">管理备注（可选）</label><textarea id="riskProgressNote" rows="2" maxlength="1000" placeholder="记录催办要求或重新分配说明"></textarea><div class="risk-action-row"><button class="secondary-button" type="button" data-risk-action="reassign"><i data-lucide="refresh-cw"></i>重新自动分配</button><button class="primary-button" type="button" data-risk-action="remind"><i data-lucide="bell-ring"></i>催办客服</button></div></div>`;
+  if (item.status === "待回访") {
+    actionPanel = `<div class="risk-action-panel"><p>客服已提交处理结果，管理者复核事实、承诺履行情况和客户反馈后决定是否关闭。</p><label for="riskProgressNote">退回说明</label><textarea id="riskProgressNote" rows="2" maxlength="1000" placeholder="退回时填写需要客服补充或修正的内容"></textarea><label for="riskResolution">复核结果</label><textarea id="riskResolution" rows="2" maxlength="1000" placeholder="确认关闭时填写最终结论、已执行动作和客户反馈"></textarea><div class="risk-action-row"><button class="secondary-button" type="button" data-risk-action="return"><i data-lucide="undo-2"></i>退回补充</button><button class="primary-button" type="button" data-risk-action="approve"><i data-lucide="circle-check"></i>复核通过并关闭</button></div></div>`;
+  } else if (item.status === "已关闭") {
+    actionPanel = '<div class="risk-closed-state"><i data-lucide="circle-check"></i><span>该事件已由管理者复核关闭，处理结果已保留在协作记录中。</span></div>';
+  }
   target.innerHTML = `
-    <div class="risk-detail-head"><span class="severity ${item.severity}">${item.severity === "high" ? "高风险" : "中风险"}</span><h3>${escapeHtml(item.title)}</h3></div>
+    <div class="risk-detail-head"><div class="risk-detail-labels"><span class="risk-type-mark ${item.severity}">${escapeHtml(item.category)}</span><span class="risk-state-pill">${escapeHtml(item.display_status)}</span>${item.needs_intervention ? '<span class="risk-attention-pill">需介入</span>' : ""}</div><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.buyer_nickname)} · ${escapeHtml(item.queue)} · ${escapeHtml(item.owner || "系统分配中")}</p></div>
     <div class="risk-detail-body">
-      <section><h4>为什么需要处理</h4><p>${escapeHtml(item.detail)}</p></section>
+      <section><h4>事件摘要</h4><p>${escapeHtml(item.detail)}</p>${item.intervention_reason ? `<div class="risk-intervention-note"><i data-lucide="triangle-alert"></i>${escapeHtml(item.intervention_reason)}</div>` : ""}</section>
+      <section><h4>已核实事实</h4>${factList(item.verified_facts || [], "暂未形成可核实事实")}</section>
+      <section><h4>冲突事实</h4>${factList(item.conflicting_facts || [], "当前未发现系统记录冲突")}</section>
+      <section><h4>待确认问题</h4>${factList((item.pending_questions || []).map((value) => ({ label: "需要专业确认", value })), "当前没有待确认问题")}</section>
       <section><h4>原始证据</h4><div class="risk-evidence-list">${(item.evidence || [])
         .map((evidence) => `<button type="button" data-evidence-id="${escapeHtml(evidence.id)}"><strong>${escapeHtml(evidence.label || evidence.source_type)}</strong><span>${escapeHtml(evidence.value)}</span></button>`)
-        .join("")}</div></section>
-      <section><h4>处理记录</h4>
-        <form class="risk-form" id="riskForm">
-          <label>负责人<input name="owner" value="${escapeHtml(item.owner || "")}" autocomplete="off" placeholder="例如：林小稚…" /></label>
-          <label>处理状态<select name="status"><option ${item.status === "待处理" ? "selected" : ""}>待处理</option><option ${item.status === "处理中" ? "selected" : ""}>处理中</option><option ${item.status === "待回访" ? "selected" : ""}>待回访</option><option ${item.status === "已关闭" ? "selected" : ""}>已关闭</option></select></label>
-          <label class="full">截止时间<input name="deadline" type="datetime-local" autocomplete="off" value="${escapeHtml(inputDateTime(item.deadline))}" /></label>
-          <button type="submit">保存处理记录</button>
-        </form>
-      </section>
-      <button class="secondary-button" id="openRiskConversation" type="button" data-session-id="${escapeHtml(item.session_id)}">回到原始会话</button>
-    </div>`;
+        .join("") || '<p class="risk-empty-copy">暂无可打开的原始证据</p>'}</div></section>
+      <section><h4>已作承诺</h4>${factList(commitments.map((commitment) => ({ label: commitment.status, value: commitment.content })), "当前没有对客户作出待履行承诺")}</section>
+      <section><h4>协作记录</h4><div class="risk-activity">${(item.activities || []).map((activity) => `<div class="risk-activity-item"><span class="risk-activity-dot"></span><div><strong>${escapeHtml(activity.actor)} · ${escapeHtml(activity.action)}</strong><time>${escapeHtml(formatTime(activity.created_at))}</time>${activity.note ? `<p>${escapeHtml(activity.note)}</p>` : ""}</div></div>`).join("")}</div></section>
+      <button class="risk-source-button" id="openRiskConversation" type="button" data-session-id="${escapeHtml(item.session_id)}"><i data-lucide="messages-square"></i>查看对话</button>
+    </div>
+    <div class="risk-detail-actions">${actionPanel}</div>`;
   refreshIcons();
 }
 
 async function loadRisks() {
   document.querySelector("#riskTable").innerHTML = '<div class="loading-block">正在同步风险事件…</div>';
   try {
-    state.risks = await api("/api/risks");
+    state.risks = await api("/api/risks?status=all");
     if (!state.selectedRiskId && state.risks.risks.length) state.selectedRiskId = state.risks.risks[0].id;
+    if (!riskItems().some((item) => item.id === state.selectedRiskId)) {
+      state.selectedRiskId = riskItems()[0]?.id || null;
+    }
     renderRiskKpis();
     renderRiskTable();
     renderRiskDetail();
@@ -775,23 +920,68 @@ async function loadRisks() {
   }
 }
 
-async function saveRisk(form) {
-  const data = new FormData(form);
+async function runRiskAction(action, button) {
   const payload = {
-    owner: String(data.get("owner") || "").trim() || null,
-    deadline: String(data.get("deadline") || "").replace("T", " ") || null,
-    status: String(data.get("status") || "待处理"),
+    action,
+    note: document.querySelector("#riskProgressNote")?.value.trim() || null,
+    resolution: document.querySelector("#riskResolution")?.value.trim() || null,
   };
-  const submitButton = form.querySelector('button[type="submit"]');
-  setLoading(submitButton, true);
+  if (action === "return" && !payload.note) {
+    showToast("退回前请填写需要补充的内容", "circle-alert");
+    document.querySelector("#riskProgressNote")?.focus();
+    return;
+  }
+  if (action === "approve" && !payload.resolution) {
+    showToast("复核关闭前必须填写处理结果", "circle-alert");
+    document.querySelector("#riskResolution")?.focus();
+    return;
+  }
+  setLoading(button, true);
   try {
     await api(`/api/risks/${state.selectedRiskId}`, { method: "PATCH", body: JSON.stringify(payload) });
-    showToast("风险处理记录已更新");
+    const labels = { remind: "已催办当前客服", reassign: "已重新自动分配", return: "已退回客服补充", approve: "事件已复核关闭" };
+    showToast(labels[action] || "协作记录已更新");
     await loadRisks();
   } catch (error) {
     showToast(error.message, "circle-alert");
   } finally {
-    setLoading(submitButton, false);
+    setLoading(button, false);
+  }
+}
+
+async function openRiskConversation(sessionId) {
+  const dialog = document.querySelector("#riskConversationDialog");
+  document.querySelector("#riskConversationTitle").textContent = "正在读取";
+  document.querySelector("#riskConversationMeta").textContent = sessionId;
+  document.querySelector("#riskConversationContent").innerHTML = '<div class="loading-block">正在加载客户对话…</div>';
+  dialog.showModal();
+  try {
+    const payload = await api(`/api/conversations/${encodeURIComponent(sessionId)}/bundle`);
+    const bundle = payload.bundle;
+    const conversation = bundle.conversation;
+    const messages = bundle.messages || [];
+    document.querySelector("#riskConversationTitle").textContent = `${conversation.buyer_nickname}的对话`;
+    document.querySelector("#riskConversationMeta").textContent = `${conversation.scene_major} · ${conversation.scene_minor} · ${conversation.session_id}`;
+    document.querySelector("#riskConversationContent").innerHTML = `
+      <div class="risk-conversation-feed evidence-chat">${messages
+        .map((message) => {
+          const isAgent = message.role === "agent";
+          const avatar = isAgent ? (message.sender === "暖心客服" ? "AI" : "服") : (conversation.buyer_nickname || "客").slice(0, 1);
+          const content =
+            message.content_type === "image"
+              ? `<div class="image-attachment${message.image_url ? " has-preview" : ""}">${message.image_url
+                  ? `<a href="${escapeHtml(message.image_url)}" target="_blank" rel="noopener" aria-label="打开用户上传的原图"><img class="message-photo" src="${escapeHtml(message.image_url)}" alt="用户上传的服务图片" width="84" height="84" /></a>`
+                  : '<div class="image-placeholder"><i data-lucide="image"></i></div>'}<div class="image-copy"><strong>${escapeHtml(message.text || "用户已提供图片")}</strong><span>${message.image_url ? "点击查看原图" : "原始数据未附图片文件"}</span></div></div>`
+              : `<div class="evidence-bubble-text">${escapeHtml(message.text)}</div>`;
+          const bubble = `<div class="bubble">${content}<div class="bubble-time">${escapeHtml(formatTime(message.sent_at))}</div></div>`;
+          return `<div class="bubble-row evidence-chat-row ${isAgent ? "agent" : "user"}">${isAgent ? bubble : `<div class="bubble-avatar">${escapeHtml(avatar)}</div>${bubble}`}${isAgent ? `<div class="bubble-avatar">${escapeHtml(avatar)}</div>` : ""}</div>`;
+        })
+        .join("")}</div>`;
+    document.querySelector("#riskConversationContent").scrollTop = 0;
+    refreshIcons();
+  } catch (error) {
+    document.querySelector("#riskConversationTitle").textContent = "无法读取对话";
+    document.querySelector("#riskConversationContent").innerHTML = `<div class="api-empty">${escapeHtml(error.message)}</div>`;
   }
 }
 
@@ -856,13 +1046,45 @@ function setupEvents() {
   document.querySelector("#searchInput").addEventListener("input", (event) => renderConversationList(event.target.value));
   document.querySelector("#insertReply").addEventListener("click", () => {
     const input = document.querySelector("#replyInput");
-    input.value = document.querySelector("#suggestedReply").textContent.trim();
+    input.value = document.querySelector("#suggestedReply").value.trim();
     input.focus();
     document.querySelector("#qualityStrip").hidden = true;
     showToast("建议已放入输入框，可继续修改");
   });
+  document.querySelector("#suggestedReply").addEventListener("input", () => {
+    state.draftEdited = true;
+  });
   document.querySelector("#regenerateReply").addEventListener("click", regenerateReply);
+  const regenerateControl = document.querySelector("#regenerateControl");
+  document.querySelector("#regenerateTrigger").addEventListener("click", () => {
+    const open = !regenerateControl.classList.contains("open");
+    setRegeneratePopover(open);
+    if (open) document.querySelector("#revisionInstruction").focus();
+  });
+  regenerateControl.addEventListener("mouseenter", () => setRegeneratePopover(true));
+  regenerateControl.addEventListener("mouseleave", () => {
+    if (!regenerateControl.contains(document.activeElement)) setRegeneratePopover(false);
+  });
+  regenerateControl.addEventListener("focusout", () => {
+    requestAnimationFrame(() => {
+      if (!regenerateControl.contains(document.activeElement)) setRegeneratePopover(false);
+    });
+  });
+  document.querySelector("#revisionInstruction").addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      setRegeneratePopover(false);
+      document.querySelector("#regenerateTrigger").focus();
+    } else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      regenerateReply();
+    }
+  });
   document.querySelector("#sendReply").addEventListener("click", sendReply);
+  document.querySelector("#serviceNote").addEventListener("input", () => {
+    state.noteEdited = true;
+    document.querySelector("#serviceNoteMeta").textContent = "尚未保存";
+  });
+  document.querySelector("#saveServiceNote").addEventListener("click", saveServiceNote);
   document.querySelector("#serviceModeButton").addEventListener("click", switchServiceMode);
   document.querySelector("#messageNav").addEventListener("click", () => {
     const firstUnread = state.conversations.find((item) => Number(item.unread_count || 0) > 0);
@@ -925,36 +1147,24 @@ function setupEvents() {
     });
   });
   document.querySelector("#riskNav").addEventListener("click", () => setView("risk"));
-  document.querySelector("#backToService").addEventListener("click", () => setView("service"));
   document.querySelector("#refreshRisks").addEventListener("click", loadRisks);
   document.querySelectorAll("[data-risk-filter]").forEach((button) =>
-    button.addEventListener("click", () => {
-      document.querySelectorAll("[data-risk-filter]").forEach((item) => {
-        item.classList.remove("active");
-        item.setAttribute("aria-pressed", "false");
-      });
-      button.classList.add("active");
-      button.setAttribute("aria-pressed", "true");
-      state.riskFilter = button.dataset.riskFilter;
-      renderRiskTable();
-      updateRiskUrl();
-    }),
+    button.addEventListener("click", () => setRiskFilter(button.dataset.riskFilter)),
   );
-  document.querySelector("#riskDetail").addEventListener("submit", (event) => {
-    if (event.target.id === "riskForm") {
-      event.preventDefault();
-      saveRisk(event.target);
-    }
+  document.querySelector("#riskKpis").addEventListener("click", (event) => {
+    const kpi = event.target.closest("[data-kpi-filter]");
+    if (kpi) setRiskFilter(kpi.dataset.kpiFilter);
   });
   document.querySelector("#riskDetail").addEventListener("click", (event) => {
+    const actionButton = event.target.closest("[data-risk-action]");
+    if (actionButton) {
+      runRiskAction(actionButton.dataset.riskAction, actionButton);
+      return;
+    }
     const button = event.target.closest("#openRiskConversation");
     if (!button) return;
-    setView("service");
-    loadConversation(button.dataset.sessionId);
+    openRiskConversation(button.dataset.sessionId);
   });
-  [document.querySelector("#createTicket"), document.querySelector("#followupAction")].forEach((button) =>
-    button.addEventListener("click", () => setView("risk")),
-  );
   document.querySelector("#closeConversation").addEventListener("click", () => {
     state.snoozedIds.add(state.activeId);
     document.querySelector('[data-inbox-view="later"]').click();
@@ -962,6 +1172,10 @@ function setupEvents() {
   });
   document.querySelector("#closeEvidence").addEventListener("click", () => document.querySelector("#evidenceDialog").close());
   document.querySelector("#evidenceDialog").addEventListener("click", (event) => {
+    if (event.target === event.currentTarget) event.currentTarget.close();
+  });
+  document.querySelector("#closeRiskConversation").addEventListener("click", () => document.querySelector("#riskConversationDialog").close());
+  document.querySelector("#riskConversationDialog").addEventListener("click", (event) => {
     if (event.target === event.currentTarget) event.currentTarget.close();
   });
 }

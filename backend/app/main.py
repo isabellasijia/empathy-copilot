@@ -18,6 +18,7 @@ from .schemas import (
     QualityRequest,
     RiskUpdateRequest,
     SendRequest,
+    ServiceNoteRequest,
     ServiceModeRequest,
 )
 from .service import EmpathyService
@@ -106,7 +107,11 @@ def analyze(session_id: str, request: AnalyzeRequest) -> dict[str, Any]:
 @app.post("/api/conversations/{session_id}/draft")
 def draft(session_id: str, request: DraftRequest) -> dict[str, Any]:
     try:
-        return service.draft(session_id, tone=request.tone)
+        return service.draft(
+            session_id,
+            tone=request.tone,
+            instruction=request.instruction.strip(),
+        )
     except KeyError:
         raise _not_found("会话", session_id)
 
@@ -133,6 +138,18 @@ def mark_read(session_id: str) -> dict[str, Any]:
         return service.mark_conversation_read(session_id)
     except KeyError:
         raise _not_found("会话", session_id)
+
+
+@app.put("/api/conversations/{session_id}/note")
+def save_service_note(session_id: str, request: ServiceNoteRequest) -> dict[str, Any]:
+    try:
+        return service.save_service_note(
+            session_id, request.note, request.actor, complete=request.complete
+        )
+    except KeyError:
+        raise _not_found("会话", session_id)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
 
 
 @app.patch("/api/conversations/{session_id}/service-mode")
@@ -204,9 +221,13 @@ def update_risk(risk_id: int, request: RiskUpdateRequest) -> dict[str, Any]:
     try:
         return service.update_risk(
             risk_id,
-            owner=request.owner,
-            deadline=request.deadline,
-            status=request.status,
+            owner=None,
+            deadline=None,
+            status=None,
+            action=request.action,
+            actor="客服主管",
+            note=request.note,
+            resolution=request.resolution,
         )
     except KeyError:
         raise _not_found("风险事件", risk_id)

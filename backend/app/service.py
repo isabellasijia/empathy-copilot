@@ -9,7 +9,7 @@ import sqlite3
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -44,6 +44,48 @@ def _dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
 
 def _severity_rank(value: str) -> int:
     return {"high": 0, "medium": 1}.get(value, 2)
+
+
+def _risk_queue(risk_type: str) -> tuple[str, str]:
+    return {
+        "adverse_reaction": ("产品安全队列", "健康安全"),
+        "product_mismatch": ("订单履约队列", "履约冲突"),
+        "visual_review": ("证据复核队列", "证据复核"),
+        "refund": ("售后审批队列", "退款补偿"),
+        "complaint": ("服务监督队列", "服务投诉"),
+    }.get(risk_type, ("服务监督队列", "服务异常"))
+
+
+def _risk_assignee_pool(risk_type: str) -> tuple[str, ...]:
+    return {
+        "adverse_reaction": ("安全客服·周妍", "安全客服·陈宁"),
+        "product_mismatch": ("履约客服·赵琪", "履约客服·沈佳"),
+        "visual_review": ("复核客服·许文", "复核客服·唐悦"),
+        "refund": ("售后客服·韩洁", "售后客服·陆宁"),
+        "complaint": ("客诉客服·顾言", "客诉客服·叶青"),
+    }.get(risk_type, ("升级客服·陈宁", "升级客服·赵琪"))
+
+
+def _risk_assignee(risk_type: str, session_id: str, offset: int = 0) -> str:
+    pool = _risk_assignee_pool(risk_type)
+    index = (sum(ord(character) for character in session_id) + offset) % len(pool)
+    return pool[index]
+
+
+def _risk_response_minutes(risk_type: str) -> int:
+    return {
+        "adverse_reaction": 3,
+        "product_mismatch": 5,
+        "visual_review": 10,
+    }.get(risk_type, 10)
+
+
+def _risk_question(risk_type: str) -> str:
+    return {
+        "adverse_reaction": "症状是否加重、是否已停用，以及是否需要进一步医疗协助？",
+        "product_mismatch": "实际已发出或待补发商品的 SKU、色号与客户确认诉求是否一致？",
+        "visual_review": "图片内容是否支持当前判断，是否需要补充更清晰的凭证？",
+    }.get(risk_type, "当前异常的最终处理口径和执行结果是什么？")
 
 
 IMAGE_DATA_URL = re.compile(
@@ -611,6 +653,17 @@ class EmpathyService:
                    (SELECT role FROM messages m WHERE m.session_id = c.session_id ORDER BY message_seq DESC LIMIT 1) AS latest_role,
                    (SELECT COUNT(*) FROM risk_events r WHERE r.session_id = c.session_id AND r.status != '已关闭') AS open_risks,
                    (SELECT COUNT(*) FROM commitments p WHERE p.session_id = c.session_id AND p.status != '已关闭') AS open_commitments,
+                   EXISTS(
+                       SELECT 1 FROM action_log a
+                       WHERE a.session_id = c.session_id
+                         AND a.action_type = '结束接待'
+                         AND a.id > COALESCE((
+                             SELECT MAX(reopened.id)
+                             FROM action_log reopened
+                             WHERE reopened.session_id = c.session_id
+                               AND reopened.action_type = '客户新消息'
+                         ), 0)
+                   ) AS is_completed,
                    COALESCE(s.unread_count, 0) AS unread_count,
                    COALESCE(s.service_mode, 'ai') AS service_mode,
                    s.handoff_reason
@@ -670,6 +723,24 @@ class EmpathyService:
                     (session_id,),
                 ).fetchone()
             )
+            note_row = connection.execute(
+                """
+                SELECT actor, payload_json, created_at
+                FROM action_log
+                WHERE session_id = ? AND action_type = '服务备注'
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (session_id,),
+            ).fetchone()
+            service_note = None
+            if note_row:
+                payload = json.loads(note_row["payload_json"])
+                service_note = {
+                    "note": payload.get("note", ""),
+                    "actor": note_row["actor"],
+                    "updated_at": note_row["created_at"],
+                }
         for message in messages:
             message["image_url"] = self._message_image_url(message)
         return {
@@ -678,6 +749,7 @@ class EmpathyService:
             "order": order,
             "tickets": tickets,
             "commitments": commitments,
+            "service_note": service_note,
             "service_state": service_state
             or {
                 "session_id": session_id,
@@ -702,6 +774,59 @@ class EmpathyService:
                 "SELECT COALESCE(SUM(unread_count), 0) AS value FROM conversation_states"
             ).fetchone()["value"]
         return {"session_id": session_id, "unread_count": 0, "total_unread": total}
+
+    def save_service_note(
+        self,
+        session_id: str,
+        note: str,
+        actor: str = "林小稚",
+        *,
+        complete: bool = False,
+    ) -> dict[str, Any]:
+        normalized_note = note.strip()
+        if not normalized_note:
+            raise ValueError("备注内容不能为空")
+        now = datetime.now().isoformat(timespec="seconds")
+        with database(self.settings.database_path) as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM conversations WHERE session_id = ?", (session_id,)
+            ).fetchone()
+            if not exists:
+                raise KeyError(session_id)
+            connection.execute(
+                """
+                INSERT INTO action_log(
+                    session_id, action_type, actor, payload_json, created_at
+                ) VALUES (?, '服务备注', ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    actor,
+                    json.dumps({"note": normalized_note}, ensure_ascii=False),
+                    now,
+                ),
+            )
+            if complete:
+                connection.execute(
+                    """
+                    INSERT INTO action_log(
+                        session_id, action_type, actor, payload_json, created_at
+                    ) VALUES (?, '结束接待', ?, ?, ?)
+                    """,
+                    (
+                        session_id,
+                        actor,
+                        json.dumps({"note": normalized_note}, ensure_ascii=False),
+                        now,
+                    ),
+                )
+        return {
+            "session_id": session_id,
+            "note": normalized_note,
+            "actor": actor,
+            "updated_at": now,
+            "completed": complete,
+        }
 
     def set_service_mode(
         self, session_id: str, mode: str, reason: str | None = None
@@ -1567,9 +1692,19 @@ class EmpathyService:
         return {"bundle": bundle, "analysis": result}
 
     def draft(
-        self, session_id: str, tone: str = "自然", prefer_fast: bool = False
+        self,
+        session_id: str,
+        tone: str = "自然",
+        prefer_fast: bool = False,
+        instruction: str = "",
     ) -> dict[str, Any]:
         request_started = time.perf_counter()
+        instruction = instruction.strip()
+        effective_tone = tone
+        if any(keyword in instruction for keyword in ("简洁", "简短", "精简")):
+            effective_tone = "简洁"
+        elif any(keyword in instruction for keyword in ("共情", "关心", "温和")):
+            effective_tone = "更关心"
         analyzed = self.analyze(session_id)
         bundle = analyzed["bundle"]
         analysis = analyzed["analysis"]
@@ -1622,7 +1757,17 @@ class EmpathyService:
                 output_summary=f"召回 {len(knowledge)} 条知识",
             )
         fallback_started = time.perf_counter()
-        fallback = fallback_reply(bundle, analysis, tone)
+        fallback = fallback_reply(bundle, analysis, effective_tone)
+        if "突出下一步" in instruction:
+            sentences = [
+                part
+                for part in re.split(r"(?<=[。！？])", fallback["reply_draft"])
+                if part.strip()
+            ]
+            if len(sentences) > 1:
+                fallback["reply_draft"] = (
+                    "".join(sentences[:-1]) + f"下一步：{sentences[-1]}"
+                )
         trace.add_step(
             "fallback_draft",
             "生成保障草稿",
@@ -1674,7 +1819,11 @@ class EmpathyService:
                 output_summary=f"{model_context['context_policy']['included_messages']} 条消息",
             )
             model_result, metadata = self.ai.draft(
-                model_context, analysis, knowledge, tone
+                model_context,
+                analysis,
+                knowledge,
+                effective_tone,
+                instruction,
             )
             reply_draft = model_result.get("reply_draft") or fallback["reply_draft"]
             trace.add_step(
@@ -1684,7 +1833,10 @@ class EmpathyService:
                 reason="结合对话、业务记录和召回知识生成回复",
                 latency_ms=metadata.get("latency_ms") or 0,
                 output_state="model_draft_ready",
-                input_summary=f"{len(knowledge)} 条知识，语气：{tone}",
+                input_summary=(
+                    f"{len(knowledge)} 条知识，语气：{effective_tone}"
+                    + (f"，修改建议：{instruction[:40]}" if instruction else "")
+                ),
                 output_summary=f"{len(reply_draft)} 个字符",
                 metadata=metadata,
             )
@@ -2016,6 +2168,19 @@ class EmpathyService:
             )
             connection.execute(
                 """
+                INSERT INTO action_log(
+                    session_id, action_type, actor, payload_json, created_at
+                ) VALUES (?, '客户新消息', ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    bundle["conversation"]["buyer_nickname"],
+                    json.dumps({"message_id": message_id}, ensure_ascii=False),
+                    sent_at,
+                ),
+            )
+            connection.execute(
+                """
                 INSERT INTO conversation_states(
                     session_id, unread_count, service_mode, handoff_reason,
                     last_customer_seq, last_auto_replied_seq, updated_at
@@ -2051,7 +2216,7 @@ class EmpathyService:
                 connection.execute(
                     f"""
                     UPDATE risk_events
-                    SET status = '已关闭', updated_at = ?
+                    SET status = '待回访', updated_at = ?
                     WHERE session_id = ? AND risk_type != 'adverse_reaction'
                       AND status != '已关闭' AND risk_key NOT IN ({placeholders})
                     """,
@@ -2061,26 +2226,25 @@ class EmpathyService:
                 connection.execute(
                     """
                     UPDATE risk_events
-                    SET status = '已关闭', updated_at = ?
+                    SET status = '待回访', updated_at = ?
                     WHERE session_id = ? AND risk_type != 'adverse_reaction'
                       AND status != '已关闭'
                     """,
                     (now, session_id),
                 )
             for risk in risks:
-                deadline = (
-                    datetime.now() + timedelta(hours=24 if risk["type"] == "adverse_reaction" else 4)
-                ).isoformat(timespec="seconds")
+                assigned_owner = _risk_assignee(risk["type"], session_id)
                 connection.execute(
                     """
                     INSERT INTO risk_events(
                         session_id, risk_key, risk_type, severity, title, detail,
                         evidence_json, owner, deadline, status, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, '待处理', ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '待处理', ?, ?)
                     ON CONFLICT(session_id, risk_key) DO UPDATE SET
                         title = excluded.title,
                         detail = excluded.detail,
                         evidence_json = excluded.evidence_json,
+                        owner = COALESCE(risk_events.owner, excluded.owner),
                         status = CASE
                             WHEN risk_events.status = '已关闭' THEN '待处理'
                             ELSE risk_events.status
@@ -2095,7 +2259,8 @@ class EmpathyService:
                         risk["title"],
                         risk["detail"],
                         json.dumps(risk["evidence"], ensure_ascii=False),
-                        deadline,
+                        assigned_owner,
+                        None,
                         now,
                         now,
                     ),
@@ -2182,6 +2347,9 @@ class EmpathyService:
 
     def list_risks(self, status: str = "open") -> dict[str, Any]:
         where = "WHERE r.status != '已关闭'" if status == "open" else ""
+        now = datetime.now()
+        now_iso = now.isoformat(timespec="seconds")
+        auto_assigned: dict[int, str] = {}
         with database(self.settings.database_path) as connection:
             rows = connection.execute(
                 f"""
@@ -2196,24 +2364,159 @@ class EmpathyService:
                 SELECT p.*, c.buyer_nickname
                 FROM commitments p
                 JOIN conversations c ON c.session_id = p.session_id
-                WHERE p.status != '已关闭'
                 ORDER BY p.deadline
                 """
             ).fetchall()
+            activity_rows = connection.execute(
+                """
+                SELECT action_type, actor, payload_json, created_at
+                FROM action_log
+                WHERE action_type IN ('更新风险', '风险协作')
+                ORDER BY id
+                """
+            ).fetchall()
+            for row in rows:
+                if row["owner"] in _risk_assignee_pool(row["risk_type"]):
+                    continue
+                assigned_owner = _risk_assignee(row["risk_type"], row["session_id"])
+                connection.execute(
+                    "UPDATE risk_events SET owner = ?, updated_at = ? WHERE id = ?",
+                    (assigned_owner, now_iso, row["id"]),
+                )
+                auto_assigned[row["id"]] = assigned_owner
+        activity_by_risk: dict[int, list[dict[str, Any]]] = {}
+        for activity_row in activity_rows:
+            payload = json.loads(activity_row["payload_json"] or "{}")
+            risk_id = payload.get("risk_id")
+            if not isinstance(risk_id, int):
+                continue
+            activity_by_risk.setdefault(risk_id, []).append(
+                {
+                    "actor": activity_row["actor"],
+                    "code": payload.get("action"),
+                    "action": payload.get("action_label") or activity_row["action_type"],
+                    "note": payload.get("resolution") or payload.get("note") or "",
+                    "created_at": activity_row["created_at"],
+                }
+            )
         risks = []
         for row in rows:
             item = dict(row)
+            if item["id"] in auto_assigned:
+                item["owner"] = auto_assigned[item["id"]]
+                item["updated_at"] = now_iso
             item["evidence"] = json.loads(item.pop("evidence_json"))
+            if (
+                item["risk_type"] == "adverse_reaction"
+                and item.get("scene_major") != "不良反应"
+                and not any(
+                    term in str(evidence.get("value") or "")
+                    for evidence in item["evidence"]
+                    for term in (
+                        "过敏",
+                        "泛红",
+                        "刺痛",
+                        "灼热",
+                        "红肿",
+                        "起疹",
+                        "发痒",
+                        "烂脸",
+                        "皮肤不适",
+                        "用后不适",
+                    )
+                )
+            ):
+                continue
+            queue_name, category = _risk_queue(item["risk_type"])
+            try:
+                activity_at = datetime.fromisoformat(
+                    item.get("updated_at") or item["created_at"]
+                )
+                waiting_minutes = max(0, int((now - activity_at).total_seconds() // 60))
+            except (TypeError, ValueError):
+                waiting_minutes = 0
+            display_status = {
+                "待处理": "待响应",
+                "待回访": "待复核",
+            }.get(item["status"], item["status"])
+            response_minutes = _risk_response_minutes(item["risk_type"])
+            needs_intervention = (
+                item["status"] in {"待处理", "处理中"}
+                and waiting_minutes >= response_minutes
+            )
+            verified_facts = [
+                {
+                    "label": evidence.get("label") or evidence.get("source_type") or "已核实信息",
+                    "value": evidence.get("value") or "",
+                    "evidence_id": evidence.get("id"),
+                }
+                for evidence in item["evidence"]
+                if evidence.get("value")
+            ]
+            conflict_facts = (
+                [{"label": "系统记录冲突", "value": item["detail"]}]
+                if item["risk_type"] == "product_mismatch"
+                else []
+            )
+            activities = [
+                {
+                    "actor": "系统",
+                    "code": "route",
+                    "action": f"识别事件并路由至{queue_name}",
+                    "note": f"自动分配给{item['owner']}。{item['detail']}",
+                    "created_at": item["created_at"],
+                },
+                *activity_by_risk.get(item["id"], []),
+            ]
+            item.update(
+                {
+                    "queue": queue_name,
+                    "category": category,
+                    "display_status": display_status,
+                    "waiting_minutes": waiting_minutes,
+                    "response_minutes": response_minutes,
+                    "needs_intervention": needs_intervention,
+                    "intervention_reason": (
+                        f"超过 {response_minutes} 分钟未更新进展"
+                        if needs_intervention
+                        else ""
+                    ),
+                    "verified_facts": verified_facts,
+                    "conflicting_facts": conflict_facts,
+                    "pending_questions": (
+                        []
+                        if item["status"] == "已关闭"
+                        else [_risk_question(item["risk_type"])]
+                    ),
+                    "activities": activities,
+                }
+            )
             risks.append(item)
-        risks.sort(key=lambda item: (_severity_rank(item["severity"]), item.get("deadline") or ""))
+        risks.sort(
+            key=lambda item: (
+                not item["needs_intervention"],
+                item["status"] == "已关闭",
+                _severity_rank(item["severity"]),
+                item["created_at"],
+            )
+        )
+        active_risks = [item for item in risks if item["status"] != "已关闭"]
+        today = now.date().isoformat()
         return {
             "risks": risks,
             "commitments": [dict(row) for row in commitments],
             "summary": {
-                "open": len(risks),
-                "high": sum(item["severity"] == "high" for item in risks),
-                "unassigned": sum(not item.get("owner") for item in risks),
-                "commitments": len(commitments),
+                "open": len(active_risks),
+                "pending": sum(item["status"] == "待处理" for item in active_risks),
+                "processing": sum(
+                    item["status"] in {"处理中", "待回访"} for item in active_risks
+                ),
+                "attention": sum(item["needs_intervention"] for item in active_risks),
+                "closed_today": sum(
+                    item["status"] == "已关闭"
+                    and str(item.get("updated_at") or "").startswith(today)
+                    for item in risks
+                ),
             },
         }
 
@@ -2223,14 +2526,72 @@ class EmpathyService:
         owner: str | None,
         deadline: str | None,
         status: str | None,
+        action: str | None = None,
+        actor: str = "客服主管",
+        note: str | None = None,
+        resolution: str | None = None,
     ) -> dict[str, Any]:
+        normalized_note = (note or "").strip()
+        normalized_resolution = (resolution or "").strip()
+        with database(self.settings.database_path) as connection:
+            current = connection.execute(
+                "SELECT * FROM risk_events WHERE id = ?", (risk_id,)
+            ).fetchone()
+            open_commitments = connection.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM commitments
+                WHERE session_id = ? AND status != '已关闭'
+                """,
+                (current["session_id"],),
+            ).fetchone()["count"] if current else 0
+        if not current:
+            raise KeyError(risk_id)
+        action_labels = {
+            "remind": "催办客服",
+            "reassign": "重新自动分配",
+            "return": "退回补充",
+            "approve": "复核通过并关闭",
+        }
+        manager_actions = {"remind", "reassign", "return", "approve"}
+        if action not in manager_actions and action is not None:
+            raise ValueError("不支持的管理动作")
+        if action in {"remind", "reassign"} and current["status"] not in {
+            "待处理",
+            "处理中",
+        }:
+            raise ValueError("当前事件状态不支持该管理动作")
+        if action == "remind":
+            normalized_note = normalized_note or "已催办当前负责人更新处理进展。"
+        elif action == "reassign":
+            pool = _risk_assignee_pool(current["risk_type"])
+            current_index = (
+                pool.index(current["owner"]) if current["owner"] in pool else -1
+            )
+            owner = pool[(current_index + 1) % len(pool)]
+            normalized_note = normalized_note or f"系统已重新分配给{owner}。"
+        elif action == "return":
+            if current["status"] != "待回访":
+                raise ValueError("只有待复核事件可以退回补充")
+            if not normalized_note:
+                raise ValueError("退回事件前必须填写需要补充的内容")
+            status = "处理中"
+        elif action == "approve":
+            if current["status"] != "待回访":
+                raise ValueError("只有待复核事件可以确认关闭")
+            if not normalized_resolution:
+                raise ValueError("关闭事件前必须填写处理结果")
+            if open_commitments:
+                raise ValueError("存在未完成承诺，不能关闭事件")
+            status = "已关闭"
+
         fields: list[str] = []
         values: list[Any] = []
         for key, value in (("owner", owner), ("deadline", deadline), ("status", status)):
             if value is not None:
                 fields.append(f"{key} = ?")
                 values.append(value)
-        if not fields:
+        if not fields and not action:
             raise ValueError("没有可更新的字段")
         fields.append("updated_at = ?")
         values.append(datetime.now().isoformat(timespec="seconds"))
@@ -2243,11 +2604,21 @@ class EmpathyService:
                 raise KeyError(risk_id)
             row = connection.execute("SELECT * FROM risk_events WHERE id = ?", (risk_id,)).fetchone()
             connection.execute(
-                "INSERT INTO action_log(session_id, action_type, actor, payload_json, created_at) VALUES (?, '更新风险', ?, ?, ?)",
+                "INSERT INTO action_log(session_id, action_type, actor, payload_json, created_at) VALUES (?, '风险协作', ?, ?, ?)",
                 (
                     row["session_id"],
-                    owner or "系统",
-                    json.dumps({"risk_id": risk_id, "status": status, "deadline": deadline}, ensure_ascii=False),
+                    actor,
+                    json.dumps(
+                        {
+                            "risk_id": risk_id,
+                            "action": action,
+                            "action_label": action_labels.get(action, "更新风险"),
+                            "status": status,
+                            "note": normalized_note,
+                            "resolution": normalized_resolution,
+                        },
+                        ensure_ascii=False,
+                    ),
                     datetime.now().isoformat(timespec="seconds"),
                 ),
             )
@@ -2257,6 +2628,66 @@ class EmpathyService:
 
     def get_evidence(self, evidence_id: str) -> dict[str, Any]:
         with database(self.settings.database_path) as connection:
+            def conversation_context(
+                session_id: str | None,
+                *,
+                target_message_id: str | None = None,
+                event_time: str | None = None,
+            ) -> list[dict[str, Any]]:
+                if not session_id:
+                    return []
+                rows = connection.execute(
+                    "SELECT * FROM messages WHERE session_id = ? ORDER BY message_seq",
+                    (session_id,),
+                ).fetchall()
+                if not rows:
+                    return []
+                pivot = len(rows) - 1
+                if target_message_id:
+                    pivot = next(
+                        (
+                            index
+                            for index, row in enumerate(rows)
+                            if row["message_id"] == target_message_id
+                        ),
+                        pivot,
+                    )
+                elif event_time:
+                    try:
+                        target_time = datetime.fromisoformat(event_time)
+                        pivot = min(
+                            range(len(rows)),
+                            key=lambda index: abs(
+                                (
+                                    datetime.fromisoformat(rows[index]["sent_at"])
+                                    - target_time
+                                ).total_seconds()
+                            )
+                            if rows[index]["sent_at"]
+                            else float("inf"),
+                        )
+                    except (TypeError, ValueError):
+                        pass
+
+                key_indexes = {pivot}
+                if rows[pivot]["role"] == "customer" and pivot + 1 < len(rows):
+                    key_indexes.add(pivot + 1)
+                elif rows[pivot]["role"] == "agent" and pivot > 0:
+                    key_indexes.add(pivot - 1)
+                start = max(0, pivot - 2)
+                end = min(len(rows), pivot + 3)
+                return [
+                    {
+                        "message_id": row["message_id"],
+                        "role": row["role"],
+                        "sender": row["sender"],
+                        "text": row["text"],
+                        "sent_at": row["sent_at"],
+                        "is_key": index in key_indexes,
+                    }
+                    for index, row in enumerate(rows[start:end], start=start)
+                ]
+
             message = connection.execute(
                 "SELECT * FROM messages WHERE message_id = ?", (evidence_id,)
             ).fetchone()
@@ -2271,6 +2702,9 @@ class EmpathyService:
                     "content": item["text"],
                     "media_url": self._message_image_url(item),
                     "fields": item,
+                    "conversation_context": conversation_context(
+                        item["session_id"], target_message_id=evidence_id
+                    ),
                 }
             order = connection.execute(
                 "SELECT * FROM orders WHERE order_id = ?", (evidence_id,)
@@ -2285,6 +2719,10 @@ class EmpathyService:
                     "title": item.get("product_name") or "订单记录",
                     "content": f"{item.get('product_name') or ''} / {item.get('status') or ''}",
                     "fields": item,
+                    "conversation_context": conversation_context(
+                        item.get("session_id"),
+                        event_time=item.get("shipped_at") or item.get("ordered_at"),
+                    ),
                 }
             ticket = connection.execute(
                 "SELECT * FROM tickets WHERE ticket_id = ?", (evidence_id,)
@@ -2308,5 +2746,8 @@ class EmpathyService:
                         if value
                     ),
                     "fields": item,
+                    "conversation_context": conversation_context(
+                        item.get("session_id"), event_time=item.get("created_at")
+                    ),
                 }
         raise KeyError(evidence_id)

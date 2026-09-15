@@ -11,6 +11,7 @@ class AnalyzeRequest(BaseModel):
 
 class DraftRequest(BaseModel):
     tone: Literal["自然", "简洁", "更关心"] = "自然"
+    instruction: str = Field(default="", max_length=200)
 
 
 class QualityRequest(BaseModel):
@@ -19,6 +20,12 @@ class QualityRequest(BaseModel):
 
 class SendRequest(QualityRequest):
     actor: str = Field(default="林小稚", max_length=50)
+
+
+class ServiceNoteRequest(BaseModel):
+    note: str = Field(min_length=1, max_length=2000)
+    actor: str = Field(default="林小稚", max_length=50)
+    complete: bool = False
 
 
 class IncomingMessageRequest(BaseModel):
@@ -34,9 +41,14 @@ class IncomingMessageRequest(BaseModel):
 
 
 class RiskUpdateRequest(BaseModel):
-    owner: str | None = Field(default=None, max_length=50)
-    deadline: str | None = Field(default=None, max_length=40)
-    status: Literal["待处理", "处理中", "待回访", "已关闭"] | None = None
+    action: Literal[
+        "remind",
+        "reassign",
+        "return",
+        "approve",
+    ] | None = None
+    note: str | None = Field(default=None, max_length=1000)
+    resolution: str | None = Field(default=None, max_length=1000)
 
 
 class ServiceModeRequest(BaseModel):

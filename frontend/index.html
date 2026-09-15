@@ -764,7 +764,7 @@
         .toast { max-width: calc(100vw - 32px); text-align: center; }
       }
     </style>
-    <link rel="stylesheet" href="/static/app.css?v=20260909-4" />
+    <link rel="stylesheet" href="/static/app.css?v=20260916-5" />
   </head>
   <body>
     <a class="skip-link" href="#main-content">跳到当前会话</a>
@@ -852,8 +852,20 @@
             <div class="assistant-status"><span class="live-badge" id="aiModeBadge">连接中</span><button class="icon-command" id="reanalyze" type="button" title="重新分析" aria-label="重新分析当前会话"><i data-lucide="refresh-cw"></i></button></div>
           </div>
         </header>
+        <section class="resolution-strip" aria-labelledby="resolutionTitle">
+          <div class="resolution-copy">
+            <i data-lucide="gauge" aria-hidden="true"></i>
+            <strong id="resolutionTitle">解决进度</strong>
+            <span class="resolution-stage" id="resolutionStage">正在判断</span>
+          </div>
+          <div class="resolution-meter" id="resolutionProgress" role="progressbar" aria-label="问题解决进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <span></span><span></span><span></span><span></span><span></span>
+          </div>
+          <span class="sr-only" id="resolutionScore">0%</span>
+          <p class="sr-only" id="resolutionSummary" aria-live="polite">正在整理当前处理情况…</p>
+        </section>
         <div class="copilot-tabs" role="tablist" aria-label="辅助信息分类">
-          <button class="copilot-tab active" id="tab-assist" data-panel="assist" type="button" role="tab" aria-selected="true" aria-controls="panel-assist">怎么回复</button>
+          <button class="copilot-tab active" id="tab-assist" data-panel="assist" type="button" role="tab" aria-selected="true" aria-controls="panel-assist">回复建议</button>
           <button class="copilot-tab" id="tab-journey" data-panel="journey" type="button" role="tab" aria-selected="false" aria-controls="panel-journey" tabindex="-1">客户信息</button>
           <button class="copilot-tab" id="tab-progress" data-panel="progress" type="button" role="tab" aria-selected="false" aria-controls="panel-progress" tabindex="-1">处理记录</button>
         </div>
@@ -861,54 +873,51 @@
           <section class="copilot-panel active" id="panel-assist" role="tabpanel" aria-labelledby="tab-assist">
             <div class="signal-bar">
               <div class="signal"><small>客户心情</small><strong><span id="signalEmotionIcon" aria-hidden="true">😟</span> <span id="signalEmotion">着急</span></strong></div>
-              <div class="signal"><small>当前问题</small><strong id="signalStatus">换货</strong></div>
-              <div class="signal"><small>提醒</small><strong class="risk" id="signalRisk">需关注</strong></div>
+              <div class="signal signal-problem"><small>当前问题</small><strong id="signalStatus">换货</strong><p id="needSummary" aria-live="polite"></p></div>
             </div>
-            <section class="resolution-card" aria-labelledby="resolutionTitle">
-              <div class="resolution-heading">
-                <div><span class="resolution-emoji" aria-hidden="true">🧭</span><strong id="resolutionTitle">解决进度</strong><span class="resolution-stage" id="resolutionStage">正在判断</span></div>
-                <output id="resolutionScore" aria-label="当前解决进度">0%</output>
-              </div>
-              <div class="resolution-track" id="resolutionProgress" role="progressbar" aria-label="问题解决进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-                <span id="resolutionFill"></span>
-              </div>
-              <p id="resolutionSummary" aria-live="polite">正在整理当前处理情况…</p>
-            </section>
-            <section class="copilot-section assistant-primary-section">
-              <div class="section-title"><h2>客户现在怎么了</h2><span>已核对记录</span></div>
-              <div class="summary-callout" id="needSummary" aria-live="polite"></div>
-              <div class="intent-summary" id="intentDetails" hidden></div>
-            </section>
             <section class="copilot-section" id="visualSection" hidden>
               <div class="section-title"><h2>图片核对</h2><span id="visualState">等待识别</span></div>
               <div class="visual-list" id="visualInsights"></div>
             </section>
             <section class="copilot-section assistant-action-section">
-              <div class="section-title"><h2>马上做什么</h2><span id="nextStepCount">2 步</span></div>
+              <div class="section-title"><h2>行动要点</h2><span id="nextStepCount">2 步</span></div>
               <div class="plain-list" id="nextSteps"></div>
             </section>
             <section class="copilot-section assistant-reply-section">
-              <div class="section-title"><h2>可以这样回复</h2><span>发送前可修改</span></div>
+              <div class="section-title reply-section-title">
+                <h2>可以这样回复</h2>
+                <div class="regenerate-control" id="regenerateControl">
+                  <button class="regenerate-trigger" id="regenerateTrigger" type="button" aria-expanded="false" aria-controls="revisionPopover">
+                    <i data-lucide="refresh-cw"></i><span>重新生成</span>
+                  </button>
+                  <div class="revision-popover" id="revisionPopover" role="dialog" aria-label="设置重新生成方向" aria-hidden="true">
+                    <label for="revisionInstruction">希望怎么修改？</label>
+                    <textarea id="revisionInstruction" rows="3" maxlength="200" placeholder="例如：更简洁一些，先表达歉意，再说明下一步"></textarea>
+                    <div class="revision-popover-footer">
+                      <span>⌘ Enter 生成</span>
+                      <button id="regenerateReply" type="button"><i data-lucide="arrow-up"></i><span>生成</span></button>
+                    </div>
+                  </div>
+                </div>
+              </div>
               <div class="suggestion">
                 <div class="suggestion-meta" id="replyTags"></div>
-                <div id="suggestedReply"></div>
+                <label class="sr-only" for="suggestedReply">可编辑的建议回复</label>
+                <textarea id="suggestedReply" rows="5" maxlength="2000" spellcheck="true"></textarea>
               </div>
-              <div class="suggestion-actions"><button class="insert" id="insertReply" type="button">填入回复框</button><button id="regenerateReply" type="button">重新生成</button></div>
+              <div class="suggestion-actions"><button class="insert" id="insertReply" type="button">填入回复框</button></div>
               <div class="suggestion-source" id="suggestionSource"></div>
             </section>
-            <div class="risk-footer"><button class="risk-action" id="createTicket" type="button">设为重点跟进</button></div>
           </section>
 
           <section class="copilot-panel" id="panel-journey" role="tabpanel" aria-labelledby="tab-journey" hidden>
             <section class="copilot-section">
-              <div class="section-title"><h2>客户特点</h2><span>只看有用信息</span></div>
-              <p class="profile-summary" id="profileSummary"></p>
+              <div class="section-title"><h2>客户信息</h2><span id="profileCount">0 项</span></div>
               <div class="profile-traits" id="profileTraits"></div>
-              <small class="profile-scope" id="profileScope"></small>
             </section>
             <section class="copilot-section">
-              <div class="section-title"><h2>之前发生过什么</h2><span>按时间整理</span></div>
-              <div id="journeyTimeline"></div>
+              <div class="section-title"><h2>历史处理记录</h2><span>点击查看详情</span></div>
+              <div class="journey-timeline" id="journeyTimeline" tabindex="0" aria-label="历史服务时间轴"></div>
             </section>
             <section class="copilot-section">
               <div class="section-title"><h2>已经确认的信息</h2><span>不用再问用户</span></div>
@@ -926,10 +935,10 @@
               <div id="progressTimeline"></div>
             </section>
             <section class="copilot-section">
-              <div class="section-title"><h2>是否需要跟进</h2><span id="followupBadge" class="status-pill warn">需要</span></div>
-              <div class="summary-callout" id="followupSummary"></div>
+              <div class="section-title"><h2>备注</h2><span id="serviceNoteMeta">本轮服务记录</span></div>
+              <textarea class="service-note-input" id="serviceNote" rows="4" maxlength="2000" placeholder="记录本轮处理结果或需要交接的信息"></textarea>
             </section>
-            <div class="risk-footer"><button class="risk-action neutral" id="followupAction" type="button">添加跟进提醒</button></div>
+            <div class="note-actions"><button class="note-save-button" id="saveServiceNote" type="button">保存备注并结束对话</button></div>
           </section>
 
         </div>
@@ -937,17 +946,17 @@
 
       <section class="risk-view" id="riskView" aria-label="风险事件工作台" hidden>
         <header class="risk-header">
-          <div><p>管理视图</p><h2>需要人工介入的服务事件</h2></div>
-          <div class="risk-header-actions"><button class="secondary-button" id="refreshRisks" type="button"><i data-lucide="refresh-cw"></i>刷新</button><button class="primary-button" id="backToService" type="button"><i data-lucide="messages-square"></i>返回接待</button></div>
+          <div><p>管理视图</p><h2>风险管理台</h2><span>系统自动分配客服，管理者负责监控、催办与复核</span></div>
+          <div class="risk-header-actions"><button class="secondary-button" id="refreshRisks" type="button"><i data-lucide="refresh-cw"></i>刷新</button></div>
         </header>
         <div class="risk-kpis" id="riskKpis"></div>
         <div class="risk-workspace">
           <section class="risk-list-panel">
-              <div class="risk-toolbar"><div><h3>待处理事件</h3><span id="riskListMeta">正在同步…</span></div><div class="segmented" role="group" aria-label="风险筛选"><button class="active" data-risk-filter="all" type="button" aria-pressed="true">全部</button><button data-risk-filter="high" type="button" aria-pressed="false">高风险</button><button data-risk-filter="unassigned" type="button" aria-pressed="false">待分配</button></div></div>
+              <div class="risk-toolbar"><div><h3>风险事件</h3><span id="riskListMeta">正在同步…</span></div><div class="segmented" role="group" aria-label="风险筛选"><button class="active" data-risk-filter="all" type="button" aria-pressed="true">进行中</button><button data-risk-filter="pending" type="button" aria-pressed="false">待响应</button><button data-risk-filter="processing" type="button" aria-pressed="false">处理中</button><button data-risk-filter="attention" type="button" aria-pressed="false">需介入</button><button data-risk-filter="closed" type="button" aria-pressed="false">已关闭</button></div></div>
             <div class="risk-table" id="riskTable"></div>
           </section>
           <aside class="risk-detail" id="riskDetail">
-            <div class="empty-detail"><i data-lucide="mouse-pointer-click"></i><strong>选择一条风险事件</strong><span>查看证据、负责人和处理时限</span></div>
+            <div class="empty-detail"><i data-lucide="mouse-pointer-click"></i><strong>选择一条风险事件</strong><span>查看事实、证据和协作进展</span></div>
           </aside>
         </div>
       </section>
@@ -957,6 +966,11 @@
     <dialog class="evidence-dialog" id="evidenceDialog" aria-labelledby="evidenceTitle">
       <div class="dialog-head"><div><span>原始证据</span><h2 id="evidenceTitle">证据详情</h2></div><button id="closeEvidence" type="button" aria-label="关闭证据详情"><i data-lucide="x"></i></button></div>
       <div id="evidenceContent"></div>
+    </dialog>
+
+    <dialog class="risk-conversation-dialog" id="riskConversationDialog" aria-labelledby="riskConversationTitle">
+      <div class="dialog-head"><div><span>客户对话</span><h2 id="riskConversationTitle">对话详情</h2><p id="riskConversationMeta"></p></div><button id="closeRiskConversation" type="button" aria-label="关闭客户对话"><i data-lucide="x"></i></button></div>
+      <div id="riskConversationContent"></div>
     </dialog>
 
     <script type="application/json" id="legacy-data">
@@ -1278,6 +1292,6 @@
       if (initialTab && initialPanel !== "assist") initialTab.click();
       else updateUrlState("assist");
     </script>
-    <script src="/static/app.js?v=20260915-5"></script>
+    <script src="/static/app.js?v=20260916-11"></script>
   </body>
 </html>

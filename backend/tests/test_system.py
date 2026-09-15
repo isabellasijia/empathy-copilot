@@ -8,6 +8,7 @@ import pytest
 
 from app.ai import QwenService
 from app.config import Settings
+from app.db import database
 from app.orchestration import build_service_graph, should_use_understanding_model
 from app.rag import search_knowledge
 from app.rules import (
@@ -77,6 +78,15 @@ def test_s00082_blocks_diagnostic_reply(service: EmpathyService) -> None:
     assert "medical_claim" in {item["code"] for item in result["issues"]}
 
 
+def test_product_suitability_wording_is_not_an_adverse_reaction(
+    service: EmpathyService,
+) -> None:
+    analysis = deterministic_analysis(service.get_bundle("S00004"))
+    assert all(
+        item["type"] != "adverse_reaction" for item in analysis["risk_signals"]
+    )
+
+
 def test_s00082_blocks_reusing_expired_followup_promise(
     service: EmpathyService,
 ) -> None:
@@ -111,14 +121,125 @@ def test_unsupported_immediate_promise_is_blocked(service: EmpathyService) -> No
     assert "unsupported_promise" in {item["code"] for item in result["issues"]}
 
 
-def test_risk_event_can_be_assigned(service: EmpathyService) -> None:
-    payload = service.list_risks()
+def test_risk_event_is_auto_assigned(service: EmpathyService) -> None:
+    payload = service.list_risks(status="all")
     risk = next(item for item in payload["risks"] if item["session_id"] == "S00018")
-    updated = service.update_risk(
-        risk["id"], owner="测试主管", deadline=None, status="处理中"
+    with database(service.settings.database_path) as connection:
+        connection.execute(
+            "UPDATE risk_events SET owner = '客服主管' WHERE id = ?",
+            (risk["id"],),
+        )
+    payload = service.list_risks(status="all")
+    risk = next(item for item in payload["risks"] if item["session_id"] == "S00018")
+    assert risk["owner"]
+    assert risk["owner"] != "客服主管"
+    assert risk["display_status"] == "待响应"
+    assert risk["activities"][0]["actor"] == "系统"
+    assert f"自动分配给{risk['owner']}" in risk["activities"][0]["note"]
+
+
+def test_manager_supervises_and_reviews_risk_workflow(
+    service: EmpathyService,
+) -> None:
+    payload = service.list_risks(status="all")
+    risk = next(item for item in payload["risks"] if item["session_id"] == "S00018")
+    original_owner = risk["owner"]
+
+    assert risk["queue"].endswith("队列")
+    assert risk["display_status"] == "待响应"
+    assert risk["verified_facts"]
+    assert risk["pending_questions"]
+    assert payload["summary"]["pending"] >= 1
+
+    reminded = service.update_risk(
+        risk["id"],
+        owner=None,
+        deadline=None,
+        status=None,
+        action="remind",
+        actor="客服主管",
     )
-    assert updated["owner"] == "测试主管"
-    assert updated["status"] == "处理中"
+    assert reminded["owner"] == original_owner
+    reassigned = service.update_risk(
+        risk["id"],
+        owner=None,
+        deadline=None,
+        status=None,
+        action="reassign",
+        actor="客服主管",
+    )
+    assert reassigned["owner"] != original_owner
+
+    service._upsert_risks(service.get_bundle(risk["session_id"]), [])
+    review = next(
+        item
+        for item in service.list_risks(status="all")["risks"]
+        if item["id"] == risk["id"]
+    )
+    assert review["status"] == "待回访"
+    assert review["display_status"] == "待复核"
+
+    with pytest.raises(ValueError, match="处理结果"):
+        service.update_risk(
+            risk["id"],
+            owner=None,
+            deadline=None,
+            status=None,
+            action="approve",
+            actor="客服主管",
+        )
+
+    with database(service.settings.database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO commitments(
+                session_id, content, deadline, evidence_id, source_message_id,
+                owner, status, created_at, updated_at
+            ) VALUES (?, ?, NULL, NULL, ?, ?, '处理中', ?, ?)
+            """,
+            (
+                risk["session_id"],
+                "测试复核前必须完成的客户承诺",
+                "TEST-RISK-REVIEW",
+                reassigned["owner"],
+                "2026-09-16T10:00:00",
+                "2026-09-16T10:00:00",
+            ),
+        )
+    with pytest.raises(ValueError, match="未完成承诺"):
+        service.update_risk(
+            risk["id"],
+            owner=None,
+            deadline=None,
+            status=None,
+            action="approve",
+            actor="客服主管",
+            resolution="已核对正确色号并完成补发。",
+        )
+
+    with database(service.settings.database_path) as connection:
+        connection.execute(
+            "UPDATE commitments SET status = '已关闭' WHERE session_id = ?",
+            (risk["session_id"],),
+        )
+    service.update_risk(
+        risk["id"],
+        owner=None,
+        deadline=None,
+        status=None,
+        action="approve",
+        actor="客服主管",
+        resolution="已核对正确色号并完成补发。",
+    )
+    closed = next(
+        item
+        for item in service.list_risks(status="all")["risks"]
+        if item["id"] == risk["id"]
+    )
+    assert closed["status"] == "已关闭"
+    assert closed["activities"][-1]["actor"] == "客服主管"
+    assert closed["activities"][-1]["action"] == "复核通过并关闭"
+    assert closed["activities"][-1]["note"] == "已核对正确色号并完成补发。"
 
 
 def test_consumer_message_is_available_to_staff(service: EmpathyService) -> None:
@@ -242,6 +363,8 @@ def test_uploaded_image_is_available_to_both_views(service: EmpathyService) -> N
     assert staff["messages"][-1]["image_url"] == consumer["messages"][-1]["image_url"]
     evidence = service.get_evidence(result["message_id"])
     assert evidence["media_url"] == consumer["messages"][-1]["image_url"]
+    assert len(evidence["conversation_context"]) >= 2
+    assert any(item["is_key"] for item in evidence["conversation_context"])
 
 
 def test_customer_profile_only_uses_service_evidence(service: EmpathyService) -> None:
@@ -250,7 +373,15 @@ def test_customer_profile_only_uses_service_evidence(service: EmpathyService) ->
     values = {item["value"] for item in profile["traits"]}
     assert "暖黄皮" in values
     assert any(value.startswith("#05") for value in values)
+    assert any(
+        item["label"] == "肤色" and item["value"] == "暖黄皮"
+        for item in profile["traits"]
+    )
     assert all(item["evidence"] for item in profile["traits"])
+    transient_profile = service.analyze("S00001", force=True)["analysis"][
+        "customer_profile"
+    ]
+    assert all(item["label"] != "沟通关注" for item in transient_profile["traits"])
 
 
 def test_evaluation_suite_is_reproducible(service: EmpathyService) -> None:
@@ -328,6 +459,16 @@ def test_draft_exposes_only_steps_that_actually_ran(
     assert all(item["latency_ms"] >= 0 for item in draft["orchestration"]["steps"])
 
 
+def test_draft_instruction_adjusts_local_fallback_tone(
+    service: EmpathyService,
+) -> None:
+    natural = service.draft("S00082")
+    concise = service.draft("S00082", instruction="请更简洁，突出下一步")
+    assert len(concise["reply_draft"]) < len(natural["reply_draft"])
+    assert "下一步：" in concise["reply_draft"]
+    assert concise["provider"] != "qwen"
+
+
 def test_latest_turn_intent_overrides_historical_scene(service: EmpathyService) -> None:
     bundle = service.get_bundle("S00018")
     bundle["messages"] = [
@@ -398,6 +539,37 @@ def test_unread_badge_is_message_state_not_risk_count(service: EmpathyService) -
     assert after["open_risks"] == before["open_risks"]
     read = service.mark_conversation_read("S00019")
     assert read["unread_count"] == 0
+
+
+def test_service_note_is_saved_and_returned_with_bundle(
+    service: EmpathyService,
+) -> None:
+    saved = service.save_service_note(
+        "S00018",
+        "已确认客户只接受 #05，等待仓库复核补发商品。",
+        "林小稚",
+        complete=True,
+    )
+    bundle = service.get_bundle("S00018")
+
+    assert saved["note"] == "已确认客户只接受 #05，等待仓库复核补发商品。"
+    assert saved["completed"] is True
+    assert bundle["service_note"]["note"] == saved["note"]
+    assert bundle["service_note"]["actor"] == "林小稚"
+    completed = next(
+        item
+        for item in service.list_conversations(limit=200)
+        if item["session_id"] == "S00018"
+    )
+    assert completed["is_completed"] == 1
+
+    service.add_incoming("S00018", "还有一个问题需要确认。", analyze=False)
+    reopened = next(
+        item
+        for item in service.list_conversations(limit=200)
+        if item["session_id"] == "S00018"
+    )
+    assert reopened["is_completed"] == 0
 
 
 def test_ai_first_response_then_explicit_handoff(service: EmpathyService) -> None:
