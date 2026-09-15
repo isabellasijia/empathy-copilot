@@ -57,6 +57,9 @@ function renderEvaluation(health, evaluation) {
     ["回复生成去重", evaluation.cost_controls.draft_deduplication ? "已开启" : "未开启"],
     ["上下文压缩", evaluation.cost_controls.context_strategy],
     ["按需模型路由", evaluation.cost_controls.on_demand_model_routing ? "已开启" : "未开启"],
+    ["文本 / 图片模型分工", evaluation.cost_controls.model_split],
+    ["歧义复核最小上下文", evaluation.cost_controls.intent_review_context],
+    ["图文任务并行", evaluation.cost_controls.parallel_multimodal ? "已开启" : "未开启"],
     ["AI 首次回复快速通道", evaluation.cost_controls.fast_auto_reply ? "已开启" : "未开启"],
   ];
   document.querySelector("#costControls").innerHTML = controls.map(([name, detail]) => `

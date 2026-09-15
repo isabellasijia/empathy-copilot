@@ -60,6 +60,8 @@ def should_use_understanding_model(
         or intent.get("source") in {"out_of_scope", "latest_turn_ambiguous"}
         or float(intent.get("confidence") or 0) < 0.7
     )
+    if is_simple_turn(bundle) and not has_viewable_image:
+        return False
     return bool(
         has_viewable_image
         or analysis.get("risk_level") in {"high", "medium"}

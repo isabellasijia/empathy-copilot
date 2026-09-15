@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from pathlib import Path
+from threading import Thread
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
@@ -31,6 +32,11 @@ settings.uploads_dir.mkdir(parents=True, exist_ok=True)
 async def lifespan(_: FastAPI):
     global startup_report
     startup_report = service.initialize()
+    Thread(
+        target=service.ai.warmup_text_model,
+        name="qwen-text-warmup",
+        daemon=True,
+    ).start()
     yield
 
 

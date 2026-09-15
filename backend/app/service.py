@@ -8,6 +8,7 @@ import re
 import sqlite3
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Lock
@@ -22,6 +23,7 @@ from .orchestration import (
     SKILL_CATALOG,
     build_service_graph,
     build_skill_trace,
+    is_simple_turn,
     should_retrieve_knowledge,
     should_use_understanding_model,
 )
@@ -104,12 +106,23 @@ class EmpathyService:
             "ai": {
                 "configured": self.ai.configured,
                 "mode": "online" if self.ai.configured else "rehearsal",
-                "model": self.settings.qwen_model,
+                "model": self.settings.qwen_text_model,
+                "text_model": self.settings.qwen_text_model,
+                "omni_model": self.settings.qwen_omni_model,
             },
         }
 
     def evaluation_summary(self) -> dict[str, Any]:
-        conflict_bundle = self.get_bundle("S00018")
+        def evaluation_bundle(session_id: str) -> dict[str, Any]:
+            bundle = self.get_bundle(session_id)
+            bundle["messages"] = [
+                item
+                for item in bundle["messages"]
+                if int(item.get("source_row") or 0) > 0
+            ]
+            return bundle
+
+        conflict_bundle = evaluation_bundle("S00018")
         conflict_analysis = deterministic_analysis(conflict_bundle)
         conflict_detected = any(
             item["type"] == "product_mismatch"
@@ -117,17 +130,17 @@ class EmpathyService:
         )
 
         repeat_check = deterministic_quality_check(
-            self.get_bundle("S00001"),
-            deterministic_analysis(self.get_bundle("S00001")),
+            evaluation_bundle("S00001"),
+            deterministic_analysis(evaluation_bundle("S00001")),
             "麻烦您再重新发一次破损照片。",
         )
         medical_check = deterministic_quality_check(
-            self.get_bundle("S00082"),
-            deterministic_analysis(self.get_bundle("S00082")),
+            evaluation_bundle("S00082"),
+            deterministic_analysis(evaluation_bundle("S00082")),
             "你这是过敏性皮炎，2天一定恢复。",
         )
 
-        anger_bundle = self.get_bundle("S00018")
+        anger_bundle = evaluation_bundle("S00018")
         anger_bundle["messages"] = [
             *anger_bundle["messages"],
             {
@@ -140,7 +153,7 @@ class EmpathyService:
         ]
         anger_analysis = deterministic_analysis(anger_bundle)
 
-        satisfaction_bundle = self.get_bundle("S00018")
+        satisfaction_bundle = evaluation_bundle("S00018")
         satisfaction_bundle["messages"] = [
             *satisfaction_bundle["messages"],
             {
@@ -152,12 +165,12 @@ class EmpathyService:
             },
         ]
         satisfaction_analysis = deterministic_analysis(satisfaction_bundle)
-        consultation_analysis = deterministic_analysis(self.get_bundle("S00019"))
+        consultation_analysis = deterministic_analysis(evaluation_bundle("S00019"))
         profile_values = {
             item["value"]
             for item in consultation_analysis["customer_profile"]["traits"]
         }
-        logistics_bundle = self.get_bundle("S00018")
+        logistics_bundle = evaluation_bundle("S00018")
         logistics_bundle["messages"] = [
             *logistics_bundle["messages"],
             {
@@ -169,7 +182,7 @@ class EmpathyService:
             },
         ]
         logistics_analysis = deterministic_analysis(logistics_bundle)
-        resolved_bundle = self.get_bundle("S00018")
+        resolved_bundle = evaluation_bundle("S00018")
         resolved_bundle["messages"] = [
             *resolved_bundle["messages"],
             {
@@ -181,7 +194,7 @@ class EmpathyService:
             },
         ]
         resolved_analysis = deterministic_analysis(resolved_bundle)
-        handoff_bundle = self.get_bundle("S00019")
+        handoff_bundle = evaluation_bundle("S00019")
         handoff_bundle["messages"] = [
             *handoff_bundle["messages"],
             {
@@ -195,7 +208,7 @@ class EmpathyService:
         handoff_analysis = deterministic_analysis(handoff_bundle)
 
         def evaluate_intent(text: str) -> dict[str, Any]:
-            probe = self.get_bundle("S00019")
+            probe = evaluation_bundle("S00019")
             probe["messages"] = [
                 *probe["messages"],
                 {
@@ -387,6 +400,12 @@ class EmpathyService:
                 "context_strategy": "首条问题 + 最近 12 条 + 结构化订单/工单/记忆",
                 "max_chat_messages_per_analysis": 13,
                 "on_demand_model_routing": True,
+                "model_split": (
+                    f"文本 {self.settings.qwen_text_model} / "
+                    f"图片 {self.settings.qwen_omni_model}"
+                ),
+                "intent_review_context": "最新消息 + 上一条用户消息 + Top 3 候选",
+                "parallel_multimodal": True,
                 "local_first_response": True,
                 "fast_auto_reply": True,
             },
@@ -1093,32 +1112,83 @@ class EmpathyService:
                 model_context = self._model_context(bundle)
                 visual_result: dict[str, Any] = {"visual_observations": []}
                 visual_metadata: dict[str, Any] | None = None
-                if multimodal_inputs:
+                model_result: dict[str, Any] = {}
+                text_metadata: dict[str, Any] | None = None
+                intent = deterministic.get("primary_intent") or {}
+                needs_intent_review = bool(
+                    intent.get("requires_clarification")
+                    or intent.get("source")
+                    in {"out_of_scope", "latest_turn_ambiguous"}
+                    or float(intent.get("confidence") or 0) < 0.7
+                )
+                needs_full_text_analysis = bool(
+                    not needs_intent_review
+                    and not is_simple_turn(bundle)
+                    and deterministic.get("risk_level") in {"high", "medium"}
+                )
+
+                customers = [
+                    item
+                    for item in bundle.get("messages", [])
+                    if item.get("role") == "customer"
+                ]
+
+                def analyze_text() -> tuple[dict[str, Any], dict[str, Any]]:
+                    if needs_intent_review:
+                        return self.ai.review_intent(
+                            customers[-1] if customers else {},
+                            customers[-2] if len(customers) > 1 else None,
+                            intent,
+                        )
+                    return self.ai.analyze(model_context, deterministic)
+
+                run_text = needs_intent_review or needs_full_text_analysis
+                if multimodal_inputs and run_text:
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        text_future = executor.submit(analyze_text)
+                        visual_future = executor.submit(
+                            self.ai.inspect_images,
+                            model_context,
+                            [item["data_url"] for item in multimodal_inputs],
+                        )
+                        model_result, text_metadata = text_future.result()
+                        visual_result, visual_metadata = visual_future.result()
+                elif multimodal_inputs:
                     visual_result, visual_metadata = self.ai.inspect_images(
                         model_context,
                         image_urls=[item["data_url"] for item in multimodal_inputs],
                     )
-                model_result, metadata = self.ai.analyze(
-                    {
-                        **model_context,
-                        "visual_observations": visual_result.get("visual_observations", []),
-                    },
-                    deterministic,
-                )
+                elif run_text:
+                    model_result, text_metadata = analyze_text()
+
                 model_result["visual_observations"] = visual_result.get(
                     "visual_observations", []
                 )
-                if visual_metadata:
+                if text_metadata:
+                    metadata = text_metadata
+                if visual_metadata and text_metadata:
                     metadata = {
-                        **metadata,
-                        "input_tokens": (metadata.get("input_tokens") or 0)
+                        **text_metadata,
+                        "model": (
+                            f"{text_metadata.get('model')} + "
+                            f"{visual_metadata.get('model')}"
+                        ),
+                        "models": {
+                            "text": text_metadata.get("model"),
+                            "vision": visual_metadata.get("model"),
+                        },
+                        "input_tokens": (text_metadata.get("input_tokens") or 0)
                         + (visual_metadata.get("input_tokens") or 0),
-                        "output_tokens": (metadata.get("output_tokens") or 0)
+                        "output_tokens": (text_metadata.get("output_tokens") or 0)
                         + (visual_metadata.get("output_tokens") or 0),
-                        "latency_ms": (metadata.get("latency_ms") or 0)
-                        + (visual_metadata.get("latency_ms") or 0),
+                        "latency_ms": max(
+                            text_metadata.get("latency_ms") or 0,
+                            visual_metadata.get("latency_ms") or 0,
+                        ),
                         "multimodal": True,
                     }
+                elif visual_metadata:
+                    metadata = {**visual_metadata, "multimodal": True}
                 result = self._sanitize_model_analysis(bundle, deterministic, model_result)
             except Exception as error:
                 metadata = {

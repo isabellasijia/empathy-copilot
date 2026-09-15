@@ -33,7 +33,11 @@ class Settings:
         "DASHSCOPE_BASE_URL",
         "https://ws-cbx8yygvhh809a77.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
     )
-    qwen_model: str = os.getenv("QWEN_MODEL", "qwen3-omni-flash-2025-12-01")
+    qwen_text_model: str = os.getenv("QWEN_TEXT_MODEL", "qwen-turbo")
+    qwen_omni_model: str = os.getenv(
+        "QWEN_OMNI_MODEL",
+        os.getenv("QWEN_MODEL", "qwen3-omni-flash-2025-12-01"),
+    )
     qwen_timeout_seconds: float = float(os.getenv("QWEN_TIMEOUT_SECONDS", "60"))
 
 

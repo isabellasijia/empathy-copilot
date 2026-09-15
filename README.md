@@ -71,7 +71,8 @@ cp .env.example .env
 ```dotenv
 DASHSCOPE_API_KEY=sk-your-new-key
 DASHSCOPE_BASE_URL=https://ws-cbx8yygvhh809a77.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
-QWEN_MODEL=qwen3-omni-flash-2025-12-01
+QWEN_TEXT_MODEL=qwen-turbo
+QWEN_OMNI_MODEL=qwen3-omni-flash-2025-12-01
 ```
 
 启动前后端：
@@ -91,7 +92,7 @@ chmod +x scripts/run_dev.sh scripts/test.sh
 
 `GET /api/evaluation` 会重放 15 个固定场景，覆盖跨系统冲突、回复安全、情绪变化、解决确认、转人工，以及意图识别中的否定、转折、多意图歧义和超范围请求。这是可复算的核心回归集，不冒充大规模线上准确率。
 
-成本优化包括：会话分析缓存、同会话并发请求合并、前端草稿去重、AI 首次回复快速通道，以及“首条问题 + 最近 12 条 + 结构化业务记忆”的上下文压缩策略。
+成本优化包括：会话分析缓存、同会话并发请求合并、前端草稿去重、AI 首次回复快速通道，以及“首条问题 + 最近 12 条 + 结构化业务记忆”的上下文压缩策略。纯文本分析与回复使用低成本 `qwen-turbo`，只有真实图片进入 `qwen3-omni-flash`；服务启动后会在后台预热文本模型，歧义复核仅发送最新消息、上一条用户消息和候选意图，图片与文本任务并行执行。
 
 调度层会先运行本地特征、业务查询和风险规则。高置信意图直接走本地快速通道；候选差值过小、超范围、风险或图片场景才调用深度理解模型。简单问候、感谢和确认不调用深度理解模型；图片理解只在存在真实图片时触发；长回复或涉及退款、补发、赔偿和医疗表述时才触发深度质检。客服页面不展示这些实现术语，独立效果评测台展示真实 Skill 路由、检索分数和模型成本。
 

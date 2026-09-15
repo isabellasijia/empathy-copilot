@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
+from app.ai import QwenService
 from app.config import Settings
 from app.orchestration import build_service_graph, should_use_understanding_model
 from app.rag import search_knowledge
@@ -204,6 +207,8 @@ def test_evaluation_suite_is_reproducible(service: EmpathyService) -> None:
     assert result["dimensions"]["风险识别"] == {"passed": 2, "total": 2}
     assert result["cost_controls"]["analysis_cache"] is True
     assert result["cost_controls"]["singleflight_per_session"] is True
+    assert result["cost_controls"]["model_split"].startswith("文本 qwen-turbo")
+    assert result["cost_controls"]["parallel_multimodal"] is True
 
 
 def test_hybrid_rag_prioritizes_matching_scene(service: EmpathyService) -> None:
@@ -357,6 +362,30 @@ def test_ai_first_response_then_explicit_handoff(service: EmpathyService) -> Non
     assert handed_off["service_state"]["service_mode"] == "human"
     assert handed_off["service_state"]["unread_count"] == 1
     assert "用户主动要求人工" in handed_off["service_state"]["handoff_reason"]
+
+
+def test_qwen_routes_text_and_images_to_different_models(
+    service: EmpathyService,
+) -> None:
+    ai = QwenService(service.settings)
+    ai.client = Mock()
+    ai.client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content='{"ok": true}'))],
+        usage=SimpleNamespace(prompt_tokens=8, completion_tokens=3),
+    )
+
+    ai._request_json("只输出 JSON", {"text": "测试"})
+    assert ai.client.chat.completions.create.call_args.kwargs["model"] == "qwen-turbo"
+
+    ai._request_json(
+        "只输出 JSON",
+        {"text": "看图"},
+        image_urls=["data:image/png;base64,AA=="],
+    )
+    assert (
+        ai.client.chat.completions.create.call_args.kwargs["model"]
+        == "qwen3-omni-flash-2025-12-01"
+    )
 
 
 @pytest.mark.parametrize(

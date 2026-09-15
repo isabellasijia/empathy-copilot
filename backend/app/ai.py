@@ -48,7 +48,7 @@ class QwenService:
                 api_key=settings.dashscope_api_key,
                 base_url=settings.dashscope_base_url,
                 timeout=settings.qwen_timeout_seconds,
-                max_retries=1,
+                max_retries=0,
             )
             if settings.dashscope_api_key
             else None
@@ -58,12 +58,27 @@ class QwenService:
     def configured(self) -> bool:
         return self.client is not None
 
+    def warmup_text_model(self) -> None:
+        if not self.client:
+            return
+        try:
+            self._request_json(
+                '只输出 JSON：{"ready":true}',
+                {"task": "warmup"},
+                max_tokens=20,
+                model=self.settings.qwen_text_model,
+            )
+        except Exception:
+            # Warmup is an optional latency optimization and must not block startup.
+            return
+
     def _request_json(
         self,
         system: str,
         payload: dict[str, Any],
         max_tokens: int = 1800,
         image_urls: list[str] | None = None,
+        model: str | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         if not self.client:
             raise RuntimeError("DASHSCOPE_API_KEY is not configured")
@@ -76,8 +91,13 @@ class QwenService:
                 for image_url in image_urls
             ]
             user_content.append({"type": "text", "text": serialized})
+        selected_model = model or (
+            self.settings.qwen_omni_model
+            if image_urls
+            else self.settings.qwen_text_model
+        )
         response = self.client.chat.completions.create(
-            model=self.settings.qwen_model,
+            model=selected_model,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user_content},
@@ -91,11 +111,63 @@ class QwenService:
         usage = getattr(response, "usage", None)
         metadata = {
             "provider": "qwen",
-            "model": self.settings.qwen_model,
+            "model": selected_model,
             "input_tokens": getattr(usage, "prompt_tokens", None),
             "output_tokens": getattr(usage, "completion_tokens", None),
             "latency_ms": latency_ms,
         }
+        return result, metadata
+
+    def review_intent(
+        self,
+        latest_message: dict[str, Any],
+        previous_customer_message: dict[str, Any] | None,
+        deterministic_intent: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        system = """
+复核美妆客服最新消息的意图，只输出 JSON。历史只用于理解省略指代，注意否定和转折。
+从 candidates 选一个；多个平行诉求无先后或无法判断时，不得猜测，返回待确认并简短追问。
+格式：{"primary_intent":{"value":"","category":"","confidence":0.0,"requires_clarification":false,"clarification_question":""}}
+待确认时 value=需要进一步确认、category=待确认、requires_clarification=true；否则不得输出候选外的意图。
+""".strip()
+        candidates = [
+            {"value": item.get("value"), "category": item.get("category")}
+            for item in deterministic_intent.get("candidates", [])[:3]
+        ]
+        payload = {
+            "latest_message": {
+                "message_id": latest_message.get("message_id"),
+                "text": latest_message.get("text") or "",
+            },
+            "previous_customer_message": (
+                {
+                    "message_id": previous_customer_message.get("message_id"),
+                    "text": previous_customer_message.get("text") or "",
+                }
+                if previous_customer_message
+                else None
+            ),
+            "candidates": candidates,
+        }
+        result, metadata = self._request_json(system, payload, max_tokens=120)
+        intent = result.get("primary_intent") or {}
+        requires_clarification = bool(intent.get("requires_clarification"))
+        selected = (intent.get("value"), intent.get("category"))
+        allowed = {(item["value"], item["category"]) for item in candidates}
+        if requires_clarification:
+            intent["value"] = "需要进一步确认"
+            intent["category"] = "待确认"
+            intent["confidence"] = min(float(intent.get("confidence") or 0.5), 0.69)
+        elif selected not in allowed:
+            intent = dict(deterministic_intent)
+        intent["evidence"] = (
+            [str(latest_message["message_id"])]
+            if latest_message.get("message_id")
+            else []
+        )
+        intent["slots"] = deterministic_intent.get("slots") or []
+        result["primary_intent"] = intent
+        metadata["task"] = "intent_review"
         return result, metadata
 
     def analyze(
@@ -167,6 +239,7 @@ comparison 仅比较图片事实与 order_info、ticket_info；无可比数据�
             payload,
             max_tokens=1000,
             image_urls=image_urls,
+            model=self.settings.qwen_omni_model,
         )
 
     def draft(self, context: dict[str, Any], analysis: dict[str, Any], knowledge: list[dict[str, Any]], tone: str) -> tuple[dict[str, Any], dict[str, Any]]:
