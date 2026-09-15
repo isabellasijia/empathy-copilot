@@ -57,6 +57,7 @@ IMAGE_EXTENSIONS = {
 MAX_IMAGE_BYTES = 4 * 1024 * 1024
 ANALYSIS_PIPELINE_VERSION = "2026-09-15-v4"
 MODEL_EVALUATION_VERSION = "2026-09-15-v1"
+SERVICE_DEFAULT_VERSION = "ai_first_v1"
 MODEL_EVALUATION_CASES = (
     {
         "id": "qwen_negation",
@@ -611,7 +612,7 @@ class EmpathyService:
                    (SELECT COUNT(*) FROM risk_events r WHERE r.session_id = c.session_id AND r.status != '已关闭') AS open_risks,
                    (SELECT COUNT(*) FROM commitments p WHERE p.session_id = c.session_id AND p.status != '已关闭') AS open_commitments,
                    COALESCE(s.unread_count, 0) AS unread_count,
-                   COALESCE(s.service_mode, 'human') AS service_mode,
+                   COALESCE(s.service_mode, 'ai') AS service_mode,
                    s.handoff_reason
             FROM conversations c
             LEFT JOIN conversation_states s ON s.session_id = c.session_id
@@ -681,7 +682,7 @@ class EmpathyService:
             or {
                 "session_id": session_id,
                 "unread_count": 0,
-                "service_mode": "human",
+                "service_mode": "ai",
                 "handoff_reason": None,
                 "last_customer_seq": 0,
                 "last_auto_replied_seq": 0,
@@ -904,7 +905,7 @@ class EmpathyService:
                 else None
             ),
             "service_state": {
-                "service_mode": bundle["service_state"].get("service_mode", "human"),
+                "service_mode": bundle["service_state"].get("service_mode", "ai"),
                 "handoff_reason": bundle["service_state"].get("handoff_reason"),
             },
             "resolution_state": resolution,
@@ -2018,7 +2019,7 @@ class EmpathyService:
                 INSERT INTO conversation_states(
                     session_id, unread_count, service_mode, handoff_reason,
                     last_customer_seq, last_auto_replied_seq, updated_at
-                ) VALUES (?, 1, 'human', NULL, ?, 0, ?)
+                ) VALUES (?, 1, 'ai', NULL, ?, 0, ?)
                 ON CONFLICT(session_id) DO UPDATE SET
                     unread_count = conversation_states.unread_count + 1,
                     last_customer_seq = excluded.last_customer_seq,
@@ -2110,15 +2111,31 @@ class EmpathyService:
                     last_customer_seq, last_auto_replied_seq, updated_at
                 )
                 SELECT session_id, 0,
-                       CASE WHEN session_id = 'S00019' THEN 'ai' ELSE 'human' END,
+                       'ai',
                        NULL,
                        COALESCE((SELECT MAX(message_seq) FROM messages m WHERE m.session_id = conversations.session_id AND m.role = 'customer'), 0),
-                       0,
+                       COALESCE((SELECT MAX(message_seq) FROM messages m WHERE m.session_id = conversations.session_id AND m.role = 'customer'), 0),
                        ?
                 FROM conversations
                 """,
                 (now,),
             )
+            service_default = connection.execute(
+                "SELECT value FROM app_meta WHERE key = 'service_default_version'"
+            ).fetchone()
+            if not service_default or service_default["value"] != SERVICE_DEFAULT_VERSION:
+                connection.execute(
+                    """
+                    UPDATE conversation_states
+                    SET service_mode = 'ai', handoff_reason = NULL,
+                        last_auto_replied_seq = last_customer_seq, updated_at = ?
+                    """,
+                    (now,),
+                )
+                connection.execute(
+                    "INSERT OR REPLACE INTO app_meta(key, value) VALUES ('service_default_version', ?)",
+                    (SERVICE_DEFAULT_VERSION,),
+                )
             sessions = [row["session_id"] for row in connection.execute("SELECT session_id FROM conversations")]
         for session_id in sessions:
             bundle = self.get_bundle(session_id)

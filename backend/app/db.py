@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS conversations (
 CREATE TABLE IF NOT EXISTS conversation_states (
     session_id TEXT PRIMARY KEY REFERENCES conversations(session_id) ON DELETE CASCADE,
     unread_count INTEGER NOT NULL DEFAULT 0,
-    service_mode TEXT NOT NULL DEFAULT 'human' CHECK(service_mode IN ('ai', 'human')),
+    service_mode TEXT NOT NULL DEFAULT 'ai' CHECK(service_mode IN ('ai', 'human')),
     handoff_reason TEXT,
     last_customer_seq INTEGER NOT NULL DEFAULT 0,
     last_auto_replied_seq INTEGER NOT NULL DEFAULT 0,

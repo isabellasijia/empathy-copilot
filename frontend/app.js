@@ -130,7 +130,7 @@ function avatarColor(id) {
 function bundleVersion(bundle) {
   const messages = bundle?.messages || [];
   const last = messages[messages.length - 1];
-  const serviceMode = bundle?.service_state?.service_mode || "human";
+  const serviceMode = bundle?.service_state?.service_mode || "ai";
   return last ? `${last.message_id}:${last.message_seq}:${serviceMode}` : `empty:${serviceMode}`;
 }
 
@@ -482,7 +482,7 @@ async function markConversationRead(sessionId) {
 async function switchServiceMode() {
   if (!state.current) return;
   const button = document.querySelector("#serviceModeButton");
-  const currentMode = state.current.bundle.service_state?.service_mode || "human";
+  const currentMode = state.current.bundle.service_state?.service_mode || "ai";
   const nextMode = currentMode === "ai" ? "human" : "ai";
   setLoading(button, true);
   try {

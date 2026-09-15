@@ -47,6 +47,13 @@ def test_etl_imports_official_workbook(service: EmpathyService) -> None:
     assert stats["available_images"] == 0
 
 
+def test_imported_conversations_default_to_ai(service: EmpathyService) -> None:
+    conversations = service.list_conversations(limit=200)
+    assert len(conversations) == 138
+    assert all(item["service_mode"] == "ai" for item in conversations)
+    assert all(item["handoff_reason"] is None for item in conversations)
+
+
 def test_s00018_detects_cross_system_product_conflict(service: EmpathyService) -> None:
     result = service.analyze("S00018", force=True)
     conflicts = [
