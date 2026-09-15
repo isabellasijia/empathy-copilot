@@ -376,81 +376,121 @@ def _service_stage(tickets: list[dict[str, Any]], conflicts: list[dict[str, Any]
 def infer_resolution(
     bundle: dict[str, Any],
     risks: list[dict[str, Any]],
-    emotion: dict[str, Any],
 ) -> dict[str, Any]:
-    """Estimate case resolution from observable service evidence, not sentiment alone."""
+    """Resolve the service lifecycle from business evidence, independently of sentiment."""
     messages = bundle.get("messages", [])
     tickets = bundle.get("tickets", [])
     customer_messages = [item for item in messages if item.get("role") == "customer"]
-    agent_messages = [item for item in messages if item.get("role") != "customer"]
     latest_customer = customer_messages[-1] if customer_messages else {}
-    latest_agent = agent_messages[-1] if agent_messages else {}
     latest_customer_text = latest_customer.get("text") or ""
-    latest_agent_text = latest_agent.get("text") or ""
-    ticket_statuses = " ".join(item.get("status") or "" for item in tickets)
-    evidence: list[str] = []
-
-    score = 25
-    if tickets:
-        score += 15
-        evidence.extend(str(item["ticket_id"]) for item in tickets[-2:])
-    if any(value in ticket_statuses for value in ("进行中", "处理中", "仓库处理", "工单组处理")):
-        score += 20
-    elif any(value in ticket_statuses for value in ("待处理", "待审核", "等待")):
-        score += 10
-    if tickets and all(
-        any(value in (item.get("status") or "") for value in ("完结", "成功", "已关闭"))
+    ticket_evidence = [str(item["ticket_id"]) for item in tickets[-2:]]
+    customer_evidence = (
+        [str(latest_customer["message_id"])] if latest_customer.get("message_id") else []
+    )
+    completed_markers = ("已完结", "完结", "成功", "已关闭", "已完成")
+    active_markers = ("进行中", "处理中", "仓库处理", "工单组处理")
+    all_completed = bool(tickets) and all(
+        any(marker in (item.get("status") or "") for marker in completed_markers)
         for item in tickets
-    ):
-        score += 30
-
-    if any(value in latest_agent_text for value in ("已核对", "正在核对", "已提交", "跟进", "处理")):
-        score += 8
-        if latest_agent.get("message_id"):
-            evidence.append(str(latest_agent["message_id"]))
-
+    )
+    any_active = any(
+        any(marker in (item.get("status") or "") for marker in active_markers)
+        for item in tickets
+    )
     explicit_resolved = customer_confirmed_resolution(messages)
-    if explicit_resolved:
-        score += 25
-    elif emotion.get("value") == "满意":
-        score += 10
-    if latest_customer.get("message_id"):
-        evidence.append(str(latest_customer["message_id"]))
-
+    explicit_unresolved = contains_unnegated_phrase(
+        latest_customer_text, UNRESOLVED_PHRASES
+    ) or any(
+        marker in latest_customer_text
+        for marker in ("没问题了吗", "解决了吗", "真的解决", "是不是解决")
+    )
+    plan_confirmed = any(
+        marker in latest_customer_text
+        for marker in (
+            "我要换",
+            "就换",
+            "同意换",
+            "我要退",
+            "就退",
+            "同意退",
+            "给我补发",
+            "就补发",
+            "就按这个",
+            "同意方案",
+        )
+    )
     high_risks = [item for item in risks if item.get("severity") == "high"]
-    if emotion.get("value") in ("愤怒", "不满"):
-        score = min(score, 28)
-        stage = "先安抚"
-        summary = "客户仍有明显不满，先回应感受并明确下一步。"
+    adverse_risk = any(item.get("type") == "adverse_reaction" for item in high_risks)
+
+    if explicit_unresolved:
+        score = 35 if tickets else 20
+        stage = "待核对"
+        summary = "客户表示问题仍未解决，需重新核对履约结果。"
+        evidence = [*ticket_evidence, *customer_evidence]
     elif explicit_resolved and not any(
         item.get("type") == "adverse_reaction" for item in high_risks
     ):
         score = 100
         stage = "已解决"
         summary = "客户已明确确认问题解决，可以完成记录并结束本次服务。"
+        evidence = customer_evidence
     elif high_risks:
-        score = min(score, 68)
+        score = 60 if tickets else 30
         stage = "待核对"
-        if emotion.get("value") == "满意":
-            summary = "客户情绪已缓和，但关键问题仍需核对后才能关闭。"
-        else:
-            summary = "关键问题尚未排除，核对完成前不要确认已解决。"
-    elif any(value in ticket_statuses for value in ("完结", "成功", "已关闭")):
-        score = max(score, 84)
-        stage = "待确认"
-        summary = "处理已完成，等待客户确认最终结果。"
+        summary = (
+            "安全风险仍需专人核对，不能仅根据工单状态关闭。"
+            if adverse_risk
+            else "记录中仍有关键冲突，需核对后再继续处理。"
+        )
+        evidence = [*ticket_evidence, *customer_evidence]
+    elif all_completed:
+        score = 100
+        stage = "已解决"
+        summary = "系统记录显示相关工单已完结，本次服务已完成。"
+        evidence = ticket_evidence
+    elif any_active:
+        score = 72
+        stage = "履约处理中"
+        summary = "处理方案正在执行，继续跟进工单或物流节点。"
+        evidence = ticket_evidence
     elif tickets:
-        stage = "处理中"
-        summary = "处理已进入工单流程，继续同步进展并等待结果。"
+        score = 52
+        stage = "已创建工单"
+        summary = "已进入工单流程，下一步是推进实际处理。"
+        evidence = ticket_evidence
+    elif plan_confirmed:
+        score = 38
+        stage = "已确认方案"
+        summary = "客户已选择处理方案，下一步是创建并执行工单。"
+        evidence = customer_evidence
     else:
-        stage = "刚开始"
+        score = 20
+        stage = "已识别诉求"
         summary = "已识别客户诉求，下一步需要确认处理方案。"
+        evidence = customer_evidence
+
+    stage_order = ("已识别诉求", "已确认方案", "已创建工单", "履约处理中", "已解决")
+    current_index = stage_order.index(stage) if stage in stage_order else None
+    milestones = [
+        {
+            "label": label,
+            "status": (
+                "complete"
+                if current_index is not None and index < current_index
+                else "current"
+                if current_index == index
+                else "pending"
+            ),
+        }
+        for index, label in enumerate(stage_order)
+    ]
 
     return {
         "score": max(0, min(round(score), 100)),
         "stage": stage,
         "summary": summary,
         "evidence": list(dict.fromkeys(evidence)),
+        "milestones": milestones,
     }
 
 
@@ -731,7 +771,7 @@ def deterministic_analysis(bundle: dict[str, Any]) -> dict[str, Any]:
         ]
 
     risk_level = "high" if any(item["severity"] == "high" for item in risks) else "medium" if risks else "none"
-    resolution = infer_resolution(bundle, risks, emotion)
+    resolution = infer_resolution(bundle, risks)
     route_reasons: list[str] = []
     if current_intent["category"] == "转人工":
         route_reasons.append("用户主动要求人工")
@@ -748,7 +788,15 @@ def deterministic_analysis(bundle: dict[str, Any]) -> dict[str, Any]:
     return {
         "primary_intent": current_intent,
         "secondary_intents": secondary,
-        "service_stage": {"value": "服务完成" if current_intent["category"] == "服务确认" else _service_stage(bundle.get("tickets", []), conflicts), "confidence": 0.9, "evidence": [ticket["ticket_id"] for ticket in bundle.get("tickets", [])]},
+        "service_stage": {
+            "value": (
+                "服务完成"
+                if resolution["stage"] == "已解决"
+                else _service_stage(bundle.get("tickets", []), conflicts)
+            ),
+            "confidence": 0.9,
+            "evidence": [ticket["ticket_id"] for ticket in bundle.get("tickets", [])],
+        },
         "emotion_state": emotion,
         "resolution_state": resolution,
         "risk_level": risk_level,

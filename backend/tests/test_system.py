@@ -138,14 +138,14 @@ def test_explicit_anger_escalates_emotion(service: EmpathyService) -> None:
 def test_latest_satisfaction_clears_earlier_negative_emotion(
     service: EmpathyService,
 ) -> None:
-    service.add_incoming("S00018", "我对服务很满意，谢谢。", analyze=False)
-    result = service.snapshot("S00018")
+    service.add_incoming("S00001", "我对服务很满意，谢谢。", analyze=False)
+    result = service.snapshot("S00001")
     emotion = result["analysis"]["emotion_state"]
     assert emotion["value"] == "满意"
     assert emotion["trend"] == "情绪已缓和"
     resolution = result["analysis"]["resolution_state"]
     assert resolution["score"] < 100
-    assert resolution["stage"] == "待核对"
+    assert resolution["stage"] == "履约处理中"
 
 
 def test_negative_feedback_keeps_resolution_low(service: EmpathyService) -> None:
@@ -161,8 +161,31 @@ def test_negative_feedback_keeps_resolution_low(service: EmpathyService) -> None
         },
     ]
     resolution = deterministic_analysis(bundle)["resolution_state"]
-    assert resolution["score"] <= 28
-    assert resolution["stage"] == "先安抚"
+    assert resolution["score"] <= 35
+    assert resolution["stage"] == "待核对"
+
+
+def test_completed_ticket_finishes_without_a_confirmation_stage(
+    service: EmpathyService,
+) -> None:
+    bundle = service.get_bundle("S00018")
+    bundle["messages"] = [
+        item
+        for item in bundle["messages"]
+        if item.get("source_sheet") == "聊天记录"
+    ]
+    bundle["tickets"] = [
+        {
+            **item,
+            "product_sku": bundle["order"]["sku"],
+            "product_name": bundle["order"]["product_name"],
+        }
+        for item in bundle["tickets"]
+    ]
+    resolution = deterministic_analysis(bundle)["resolution_state"]
+    assert resolution["score"] == 100
+    assert resolution["stage"] == "已解决"
+    assert all(item["label"] != "等待用户确认" for item in resolution["milestones"])
 
 
 def test_customer_confirmation_can_complete_a_clear_case(

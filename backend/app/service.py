@@ -215,7 +215,8 @@ class EmpathyService:
         ]
         anger_analysis = deterministic_analysis(anger_bundle)
 
-        satisfaction_bundle = evaluation_bundle("S00018")
+        # Use an actively processing case so satisfaction cannot masquerade as fulfillment.
+        satisfaction_bundle = evaluation_bundle("S00001")
         satisfaction_bundle["messages"] = [
             *satisfaction_bundle["messages"],
             {
@@ -324,7 +325,7 @@ class EmpathyService:
             {
                 "id": "emotion_recovery",
                 "name": "最新满意反馈覆盖历史不满",
-                "case": "S00018 + 测试轮",
+                "case": "S00001 + 测试轮",
                 "dimension": "情绪判断",
                 "passed": satisfaction_analysis["emotion_state"]["value"] == "满意",
                 "expected": "识别情绪缓和，不被较早负面消息覆盖",
@@ -332,10 +333,10 @@ class EmpathyService:
             {
                 "id": "resolution_guard",
                 "name": "满意不等于问题已解决",
-                "case": "S00018 + 测试轮",
+                "case": "S00001 + 测试轮",
                 "dimension": "风险识别",
                 "passed": satisfaction_analysis["resolution_state"]["score"] < 100,
-                "expected": "色号冲突未关闭时，解决进度不会满分",
+                "expected": "工单仍在处理时，满意表达不会让进度满分",
             },
             {
                 "id": "intent_identification",
