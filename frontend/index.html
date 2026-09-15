@@ -856,7 +856,6 @@
           <button class="copilot-tab active" id="tab-assist" data-panel="assist" type="button" role="tab" aria-selected="true" aria-controls="panel-assist">怎么回复</button>
           <button class="copilot-tab" id="tab-journey" data-panel="journey" type="button" role="tab" aria-selected="false" aria-controls="panel-journey" tabindex="-1">客户信息</button>
           <button class="copilot-tab" id="tab-progress" data-panel="progress" type="button" role="tab" aria-selected="false" aria-controls="panel-progress" tabindex="-1">处理记录</button>
-          <button class="copilot-tab" id="tab-trace" data-panel="trace" type="button" role="tab" aria-selected="false" aria-controls="panel-trace" tabindex="-1">AI处理过程</button>
         </div>
         <div class="copilot-scroll">
           <section class="copilot-panel active" id="panel-assist" role="tabpanel" aria-labelledby="tab-assist">
@@ -933,21 +932,6 @@
             <div class="risk-footer"><button class="risk-action neutral" id="followupAction" type="button">添加跟进提醒</button></div>
           </section>
 
-          <section class="copilot-panel" id="panel-trace" role="tabpanel" aria-labelledby="tab-trace" hidden>
-            <section class="copilot-section">
-              <div class="section-title"><h2>这次分析用了什么</h2><span class="status-pill" id="traceRunBadge">本地规则</span></div>
-              <div class="summary-callout" id="traceRunSummary" aria-live="polite"></div>
-            </section>
-            <section class="copilot-section">
-              <div class="section-title"><h2>调用了哪些能力（Skill）</h2><span id="traceSkillCount"></span></div>
-              <p class="profile-summary" style="margin-bottom:10px;">规则先跑一遍打底，只有满足条件的能力才会被真正调用，避免不必要的等待和成本。</p>
-              <div id="traceSkills"></div>
-            </section>
-            <section class="copilot-section">
-              <div class="section-title"><h2>Agent 分工</h2><span>调度 → 理解 → 回复 → 质检</span></div>
-              <div id="traceAgents"></div>
-            </section>
-          </section>
         </div>
       </aside>
 
@@ -1294,6 +1278,6 @@
       if (initialTab && initialPanel !== "assist") initialTab.click();
       else updateUrlState("assist");
     </script>
-    <script src="/static/app.js?v=20260909-4"></script>
+    <script src="/static/app.js?v=20260915-5"></script>
   </body>
 </html>

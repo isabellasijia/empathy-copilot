@@ -418,81 +418,7 @@ function renderCopilot(payload) {
     button.className = `risk-action${analysis.risk_level === "high" ? "" : " neutral"}`;
   });
 
-  renderOrchestration(analysis);
   refreshIcons();
-}
-
-const SKILL_MODE_LABEL = { local: "本地规则", "qwen-omni": "大模型" };
-
-const AGENT_STATUS_LABEL = {
-  called: "本轮已执行",
-  reused: "复用已有结果",
-  skipped: "本轮未触发",
-  deferred: "等到发送前才执行",
-};
-
-function runReasonText(run, orchestration) {
-  const aiConfigured = Boolean(state.health?.ai?.configured);
-  const simpleTurn = orchestration.features?.simple_turn;
-  const risky = orchestration.features?.risk_level && orchestration.features.risk_level !== "none";
-  if (run.provider?.startsWith("qwen")) {
-    return "这轮内容比较复杂、有风险信号或包含图片，系统真实请求了大模型做深入判断";
-  }
-  if (run.provider === "local-fallback") {
-    return `本该请求大模型，但调用失败（${run.error || "未知错误"}），已自动降级为本地规则兜底，不影响正常使用`;
-  }
-  if (!aiConfigured) {
-    return risky || !simpleTurn
-      ? "当前是「演示模式」（未配置大模型密钥）：即使本轮内容复杂/有风险，系统也无法真正调用大模型，只能用本地规则给出结果"
-      : "当前是「演示模式」（未配置大模型密钥）+ 本轮内容简单（如寒暄/致谢），两个原因叠加，只用本地规则完成";
-  }
-  return "本轮内容简单（如寒暄/致谢），系统判断没必要调用大模型，直接用本地规则完成，省时间也省成本";
-}
-
-function renderOrchestration(analysis) {
-  const run = analysis.run || {};
-  const orchestration = analysis.orchestration || {};
-  const runBadge = document.querySelector("#traceRunBadge");
-  const runSummary = document.querySelector("#traceRunSummary");
-  if (run.pending) {
-    runBadge.textContent = "大模型分析中…";
-    runBadge.className = "status-pill warn";
-    runSummary.innerHTML = `<i data-lucide="loader-circle"></i><span>规则引擎已先给出一版结果，系统正在后台请求大模型做更深入的判断，完成后会自动刷新。</span>`;
-  } else {
-    const isQwen = run.provider?.startsWith("qwen");
-    const isFallback = run.provider === "local-fallback";
-    runBadge.textContent = isQwen ? "已调用大模型" : isFallback ? "规则兜底" : "仅本地规则";
-    runBadge.className = `status-pill${isQwen ? "" : isFallback ? " warn" : ""}`;
-    const parts = [runReasonText(run, orchestration)];
-    if (run.cached) parts.push("本次直接复用了上一次的分析结果，没有重新计算");
-    if (run.latency_ms) parts.push(`耗时 ${run.latency_ms}ms`);
-    if (run.input_tokens) parts.push(`消耗约 ${(run.input_tokens || 0) + (run.output_tokens || 0)} tokens`);
-    runSummary.innerHTML = `<i data-lucide="${isQwen ? "sparkles" : isFallback ? "triangle-alert" : "shield-check"}"></i><span>${escapeHtml(parts.join("；"))}</span>`;
-  }
-
-  const skills = orchestration.skills || [];
-  document.querySelector("#traceSkillCount").textContent = skills.length
-    ? `${orchestration.called_skills ?? 0}/${skills.length} 项已调用`
-    : "";
-  document.querySelector("#traceSkills").innerHTML = skills
-    .map((skill) => {
-      const called = skill.status === "called";
-      const modeText = called ? SKILL_MODE_LABEL[skill.mode] || "本地规则" : "未调用";
-      return `<div class="skill-row${called ? "" : " skipped"}">
-        <div class="skill-icon"><i data-lucide="${called ? "check" : "minus"}"></i></div>
-        <div class="skill-copy"><strong>${escapeHtml(skill.label)}</strong><span>${escapeHtml(skill.reason || "")}</span></div>
-        <span class="skill-mode${called && skill.mode === "qwen-omni" ? " model" : ""}">${escapeHtml(modeText)}</span>
-      </div>`;
-    })
-    .join("") || '<div class="api-empty">暂无处理链路数据</div>';
-
-  const agents = orchestration.agents || [];
-  document.querySelector("#traceAgents").innerHTML = agents
-    .map(
-      (agent, index) =>
-        `<div class="trace-step"><div class="trace-index">${index + 1}</div><div class="trace-copy"><strong>${escapeHtml(agent.label)}</strong><span>${escapeHtml(AGENT_STATUS_LABEL[agent.status] || agent.status)}</span></div></div>`,
-    )
-    .join("") || '<div class="api-empty">暂无 Agent 调用记录</div>';
 }
 
 async function refreshDynamicDraft(sessionId, version) {
@@ -969,7 +895,9 @@ function setupEvents() {
   });
   document.querySelector("#customerProfileButton").addEventListener("click", () => openPanel("journey"));
   document.querySelector("#orderHistoryButton").addEventListener("click", () => openPanel("progress"));
-  document.querySelector("#settingsTool").addEventListener("click", () => openPanel("trace"));
+  document.querySelector("#settingsTool").addEventListener("click", () =>
+    window.open("/evaluation", "_blank", "noopener"),
+  );
   document.querySelector("#globalSearch").addEventListener("click", () => document.querySelector("#searchInput").focus());
   document.querySelector("#notificationTool").addEventListener("click", () => document.querySelector("#messageNav").click());
   document.querySelector("#knowledgeButton").addEventListener("click", () => openPanel("journey"));

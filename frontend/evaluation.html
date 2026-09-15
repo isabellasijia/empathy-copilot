@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#f5f5f7" />
     <title>共情双舱 · 效果评测</title>
     <script src="/static/lucide.min.js"></script>
-    <link rel="stylesheet" href="/static/evaluation.css" />
+    <link rel="stylesheet" href="/static/evaluation.css?v=20260915-2" />
   </head>
   <body>
     <a class="skip-link" href="#evaluationMain">跳到评测内容</a>
@@ -24,7 +24,7 @@
 
     <main class="evaluation-main" id="evaluationMain" tabindex="-1">
       <header class="page-heading">
-        <div><span>可复算结果</span><h1>Agent 效果与运行成本</h1></div>
+        <div><span>可复算结果</span><h1>客服智能分析效果与运行成本</h1></div>
         <p>基于官方 MOCK 业务数据与可重放安全场景。</p>
       </header>
 
@@ -47,8 +47,9 @@
             <div class="control-list" id="costControls"></div>
           </section>
           <section>
-            <div class="section-heading"><div><h2>按需 Skill 路由</h2><p>调用需要的能力，其余自动跳过</p></div><span class="route-badge" id="routeBadge">读取中</span></div>
+            <div class="section-heading"><div><h2>真实执行轨迹</h2><p>只展示本次确实运行的节点</p></div><span class="route-badge" id="routeBadge">读取中</span></div>
             <div class="skill-trace" id="skillTrace"></div>
+            <p class="trace-state" id="traceState"></p>
           </section>
           <section>
             <div class="section-heading"><div><h2>混排知识召回</h2><p id="ragMethod">正在读取检索策略…</p></div></div>
@@ -59,6 +60,6 @@
 
       <p class="method-note" id="methodNote">评测口径说明正在加载…</p>
     </main>
-    <script src="/static/evaluation.js?v=20260915-1"></script>
+    <script src="/static/evaluation.js?v=20260915-2"></script>
   </body>
 </html>

@@ -97,13 +97,31 @@ function renderEvaluation(health, evaluation) {
     <div class="control-item"><i data-lucide="circle-check"></i><div><strong>${escapeEvaluationHtml(name)}</strong><span>${escapeEvaluationHtml(detail)}</span></div></div>`).join("");
 
   const trace = evaluation.architecture?.sample_trace || {};
-  document.querySelector("#routeBadge").textContent = `${trace.called_skills || 0} 调用 · ${trace.skipped_skills || 0} 跳过`;
-  document.querySelector("#skillTrace").innerHTML = (trace.skills || []).map((skill) => `
-    <div class="skill-item ${skill.status}">
-      <i data-lucide="${skill.status === "called" ? "check" : "minus"}"></i>
-      <div><strong>${escapeEvaluationHtml(skill.label)}</strong><span>${escapeEvaluationHtml(skill.reason)}</span></div>
-      <small>${skill.status === "called" ? "已调用" : "已跳过"}</small>
-    </div>`).join("");
+  const steps = trace.steps || [];
+  document.querySelector("#routeBadge").textContent = `${steps.length} 个实际节点 · ${Number(trace.total_latency_ms || 0).toFixed(1)} ms`;
+  document.querySelector("#skillTrace").innerHTML = steps.map((step) => {
+    const metadata = step.metadata || {};
+    const tokenCount = (metadata.input_tokens || 0) + (metadata.output_tokens || 0);
+    const executionMeta = [step.engine, metadata.model, `${Number(step.latency_ms || 0).toFixed(1)} ms`, tokenCount ? `${tokenCount} tokens` : ""]
+      .filter(Boolean)
+      .join(" · ");
+    const detail = [
+      step.reason,
+      step.input_summary ? `输入：${step.input_summary}` : "",
+      step.output_summary ? `输出：${step.output_summary}` : "",
+    ].filter(Boolean).join("；");
+    return `
+    <div class="skill-item ${step.status}">
+      <i data-lucide="${step.status === "failed" ? "triangle-alert" : "check"}"></i>
+      <div><strong>${escapeEvaluationHtml(step.label)}</strong><span>${escapeEvaluationHtml(detail)}</span></div>
+      <small>${escapeEvaluationHtml(executionMeta)}</small>
+    </div>`;
+  }).join("") || '<div class="empty-rag">暂无执行轨迹</div>';
+  const transitions = (trace.state_transitions || []).map((item) => item.to).join(" → ");
+  const handoff = trace.human_handoff?.required
+    ? `需人工接管：${trace.human_handoff.reason}`
+    : "本轮无需人工接管";
+  document.querySelector("#traceState").textContent = [transitions ? `状态：${transitions}` : "", handoff].filter(Boolean).join("；");
 
   document.querySelector("#ragMethod").textContent = evaluation.rag
     ? `${evaluation.rag.method} · ${evaluation.rag.latency_ms.toFixed(1)} ms`

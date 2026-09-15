@@ -308,18 +308,17 @@ def test_service_graph_links_order_ticket_and_sku(service: EmpathyService) -> No
     assert {"placed", "contains", "created", "handles"} <= relations
 
 
-def test_draft_exposes_real_skill_and_retrieval_trace(
+def test_draft_exposes_only_steps_that_actually_ran(
     service: EmpathyService,
 ) -> None:
     draft = service.draft("S00018")
     assert draft["knowledge"]
     assert draft["orchestration"]["task"] == "draft"
-    called = {
-        item["id"]
-        for item in draft["orchestration"]["skills"]
-        if item["status"] == "called"
-    }
-    assert {"order_lookup", "ticket_lookup", "risk_guard", "hybrid_knowledge"} <= called
+    step_ids = {item["id"] for item in draft["orchestration"]["steps"]}
+    assert {"analysis_context", "knowledge_retrieval", "fallback_draft", "draft_route"} <= step_ids
+    assert "agents" not in draft["orchestration"]
+    assert "skills" not in draft["orchestration"]
+    assert all(item["latency_ms"] >= 0 for item in draft["orchestration"]["steps"])
 
 
 def test_latest_turn_intent_overrides_historical_scene(service: EmpathyService) -> None:
@@ -607,3 +606,11 @@ def test_model_quality_failure_blocks_send(
     assert result["passed"] is False
     assert result["checks"]["model_review_passed"] is False
     assert result["issues"][0]["severity"] == "high"
+    trace = result["orchestration"]
+    model_step = next(
+        item for item in trace["steps"] if item["id"] == "model_quality_review"
+    )
+    assert model_step["metadata"]["model"] == "qwen-turbo"
+    assert model_step["metadata"]["input_tokens"] == 10
+    assert trace["final_state"] == "blocked"
+    assert "agents" not in trace

@@ -1,20 +1,8 @@
 from __future__ import annotations
 
+import time
 from datetime import datetime
 from typing import Any
-
-
-SKILL_CATALOG = (
-    {"id": "context_builder", "label": "上下文整理", "mode": "local"},
-    {"id": "intent_router", "label": "意图路由", "mode": "hybrid"},
-    {"id": "order_lookup", "label": "订单查询", "mode": "local"},
-    {"id": "ticket_lookup", "label": "工单查询", "mode": "local"},
-    {"id": "service_memory", "label": "服务记忆", "mode": "local"},
-    {"id": "risk_guard", "label": "风险核对", "mode": "local"},
-    {"id": "image_inspection", "label": "图片核对", "mode": "qwen-omni"},
-    {"id": "hybrid_knowledge", "label": "混排知识检索", "mode": "local"},
-)
-
 
 def _latest_customer_text(bundle: dict[str, Any]) -> str:
     return next(
@@ -133,89 +121,105 @@ def build_service_graph(bundle: dict[str, Any]) -> dict[str, Any]:
     return {"nodes": nodes, "edges": edges}
 
 
-def build_skill_trace(
-    bundle: dict[str, Any],
-    analysis: dict[str, Any],
-    *,
-    task: str,
-    model_called: bool,
-    retrieval_count: int = 0,
-    cached: bool = False,
-) -> dict[str, Any]:
-    simple_turn = is_simple_turn(bundle)
-    has_images = any(
-        item.get("content_type") == "image" and item.get("image_available")
-        for item in bundle.get("messages", [])
-    )
-    has_risk = analysis.get("risk_level") in {"high", "medium"}
-    decisions = {
-        "context_builder": (True, "整合最新对话与服务状态"),
-        "intent_router": (
-            True,
-            "本地候选已确认"
-            if not analysis.get("primary_intent", {}).get("requires_clarification")
-            else "候选接近，交深度模型复核",
-        ),
-        "order_lookup": (
-            bool(bundle.get("order")),
-            "已关联订单" if bundle.get("order") else "本轮无关联订单",
-        ),
-        "ticket_lookup": (
-            bool(bundle.get("tickets")),
-            "已关联售后工单" if bundle.get("tickets") else "本轮无关联工单",
-        ),
-        "service_memory": (True, "读取有证据的服务记忆"),
-        "risk_guard": (
-            has_risk or task == "quality",
-            "存在风险或进入发送检查"
-            if has_risk or task == "quality"
-            else "当前无风险信号",
-        ),
-        "image_inspection": (
-            has_images and task == "analysis",
-            "检测到可读取图片" if has_images else "本轮没有可读取图片",
-        ),
-        "hybrid_knowledge": (
-            task == "draft" and not simple_turn,
-            f"召回 {retrieval_count} 条审核知识"
-            if retrieval_count
-            else "未命中可用知识",
-        ),
-    }
-    skills = []
-    for definition in SKILL_CATALOG:
-        called, reason = decisions[definition["id"]]
-        skills.append(
-            {**definition, "status": "called" if called else "skipped", "reason": reason}
-        )
+def elapsed_ms(started_at: float) -> float:
+    return round((time.perf_counter() - started_at) * 1000, 2)
 
-    called_count = sum(item["status"] == "called" for item in skills)
-    return {
-        "task": task,
-        "strategy": "rules_first_on_demand",
-        "created_at": datetime.now().isoformat(timespec="seconds"),
-        "cache_hit": cached,
-        "model_called": model_called,
-        "called_skills": called_count,
-        "skipped_skills": len(skills) - called_count,
-        "features": build_service_features(bundle, analysis),
-        "skills": skills,
-        "agents": [
-            {"id": "supervisor", "label": "调度 Agent", "status": "called"},
-            {
-                "id": "understanding",
-                "label": "会话理解 Agent",
-                "status": "called" if task == "analysis" else "reused",
+
+class WorkflowTrace:
+    """Record only workflow nodes that actually ran for the current request."""
+
+    def __init__(
+        self,
+        task: str,
+        bundle: dict[str, Any],
+        *,
+        started_at: float | None = None,
+    ) -> None:
+        self.task = task
+        self.bundle = bundle
+        self.started_at = started_at if started_at is not None else time.perf_counter()
+        self.created_at = datetime.now().isoformat(timespec="milliseconds")
+        self.steps: list[dict[str, Any]] = []
+        self.transitions: list[dict[str, str]] = []
+        self.current_state = "received"
+        self.model_called = False
+        self.cache_hit = False
+
+    def add_step(
+        self,
+        step_id: str,
+        label: str,
+        *,
+        engine: str,
+        reason: str,
+        latency_ms: float,
+        output_state: str,
+        input_summary: str = "",
+        output_summary: str = "",
+        status: str = "completed",
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        step = {
+            "id": step_id,
+            "label": label,
+            "engine": engine,
+            "status": status,
+            "reason": reason,
+            "latency_ms": round(float(latency_ms or 0), 2),
+            "input_summary": input_summary,
+            "output_summary": output_summary,
+        }
+        if metadata:
+            step["metadata"] = {
+                key: value
+                for key, value in metadata.items()
+                if key in {"model", "input_tokens", "output_tokens", "provider"}
+                and value is not None
+            }
+        self.steps.append(step)
+        if engine.startswith("qwen") or (metadata or {}).get("provider") == "qwen":
+            self.model_called = True
+        if engine == "cache":
+            self.cache_hit = True
+        if output_state != self.current_state:
+            self.transitions.append(
+                {
+                    "from": self.current_state,
+                    "to": output_state,
+                    "trigger": step_id,
+                }
+            )
+            self.current_state = output_state
+
+    def finish(
+        self,
+        analysis: dict[str, Any],
+        *,
+        final_state: str | None = None,
+    ) -> dict[str, Any]:
+        route = analysis.get("service_route") or {}
+        target_state = final_state or (
+            "human_review_required" if route.get("mode") == "human" else "completed"
+        )
+        if target_state != self.current_state:
+            self.transitions.append(
+                {"from": self.current_state, "to": target_state, "trigger": "workflow_end"}
+            )
+            self.current_state = target_state
+        return {
+            "task": self.task,
+            "strategy": "evidence_first_workflow",
+            "created_at": self.created_at,
+            "completed_at": datetime.now().isoformat(timespec="milliseconds"),
+            "total_latency_ms": elapsed_ms(self.started_at),
+            "cache_hit": self.cache_hit,
+            "model_called": self.model_called,
+            "features": build_service_features(self.bundle, analysis),
+            "steps": self.steps,
+            "state_transitions": self.transitions,
+            "final_state": self.current_state,
+            "human_handoff": {
+                "required": route.get("mode") == "human",
+                "reason": route.get("reason") or "",
             },
-            {
-                "id": "response",
-                "label": "回复生成 Agent",
-                "status": "called" if task == "draft" and model_called else "skipped",
-            },
-            {
-                "id": "guard",
-                "label": "独立质检 Agent",
-                "status": "called" if task == "quality" else "deferred",
-            },
-        ],
-    }
+        }

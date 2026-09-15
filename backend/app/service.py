@@ -20,9 +20,10 @@ from .db import database
 from .etl import import_workbook
 from .intents import is_allowed_intent
 from .orchestration import (
-    SKILL_CATALOG,
+    WorkflowTrace,
+    build_service_features,
     build_service_graph,
-    build_skill_trace,
+    elapsed_ms,
     is_simple_turn,
     should_retrieve_knowledge,
     should_use_understanding_model,
@@ -54,7 +55,7 @@ IMAGE_EXTENSIONS = {
     "image/webp": ".webp",
 }
 MAX_IMAGE_BYTES = 4 * 1024 * 1024
-ANALYSIS_PIPELINE_VERSION = "2026-09-15-v3"
+ANALYSIS_PIPELINE_VERSION = "2026-09-15-v4"
 MODEL_EVALUATION_VERSION = "2026-09-15-v1"
 MODEL_EVALUATION_CASES = (
     {
@@ -422,7 +423,8 @@ class EmpathyService:
             latest_run = _dict(
                 connection.execute(
                     """
-                    SELECT provider, model, input_tokens, output_tokens, latency_ms, updated_at
+                    SELECT provider, model, input_tokens, output_tokens, latency_ms,
+                           updated_at, result_json
                     FROM analysis_cache
                     WHERE provider = 'qwen'
                     ORDER BY updated_at DESC
@@ -430,7 +432,28 @@ class EmpathyService:
                     """
                 ).fetchone()
             )
+        latest_execution_trace = None
+        if latest_run:
+            try:
+                latest_execution_trace = json.loads(
+                    latest_run.pop("result_json")
+                ).get("orchestration")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                latest_run.pop("result_json", None)
 
+        trace = WorkflowTrace("evaluation", conflict_bundle)
+        rules_started = time.perf_counter()
+        trace_analysis = deterministic_analysis(conflict_bundle)
+        trace.add_step(
+            "rules_analysis",
+            "本地规则分析",
+            engine="local",
+            reason="评测可复算的意图、情绪和风险结果",
+            latency_ms=elapsed_ms(rules_started),
+            output_state="rules_ready",
+            input_summary=f"{len(conflict_bundle['messages'])} 条消息",
+            output_summary=f"意图：{trace_analysis['primary_intent']['value']}",
+        )
         rag_started = time.perf_counter()
         rag_probe = search_knowledge(
             self.settings.database_path,
@@ -438,14 +461,18 @@ class EmpathyService:
             scene="补发换货",
             limit=3,
         )
-        rag_latency_ms = round((time.perf_counter() - rag_started) * 1000, 2)
-        sample_trace = build_skill_trace(
-            conflict_bundle,
-            conflict_analysis,
-            task="draft",
-            model_called=self.ai.configured,
-            retrieval_count=len(rag_probe),
+        rag_latency_ms = elapsed_ms(rag_started)
+        trace.add_step(
+            "knowledge_retrieval",
+            "知识检索",
+            engine="local",
+            reason="为复杂售后场景查找可引用的处理依据",
+            latency_ms=rag_latency_ms,
+            output_state="knowledge_ready",
+            input_summary="错发色号与补发工单",
+            output_summary=f"召回 {len(rag_probe)} 条知识",
         )
+        sample_trace = trace.finish(trace_analysis)
         model_evaluation = self._model_evaluation()
 
         return {
@@ -475,9 +502,9 @@ class EmpathyService:
                 "fast_auto_reply": True,
             },
             "architecture": {
-                "strategy": "层级意图候选 + 低置信兜底 + 按需 Agent 编排",
-                "skill_catalog": list(SKILL_CATALOG),
-                "sample_trace": sample_trace,
+                "strategy": "确定性工作流 + 低置信兜底 + 按需模型节点",
+                "sample_trace": latest_execution_trace or sample_trace,
+                "trace_source": "latest_model_run" if latest_execution_trace else "evaluation_run",
             },
             "rag": {
                 "method": "BM25 + 本地 N-gram 向量 + 元数据过滤 + RRF 融合",
@@ -901,12 +928,7 @@ class EmpathyService:
                 "strategy": "full" if len(messages) <= 13 else "first_and_recent_12",
             },
             "service_graph": build_service_graph(bundle),
-            "service_features": build_skill_trace(
-                bundle,
-                deterministic,
-                task="analysis",
-                model_called=False,
-            )["features"],
+            "service_features": build_service_features(bundle, deterministic),
             "chat_history": [
                 {
                     "message_id": item["message_id"],
@@ -1160,15 +1182,51 @@ class EmpathyService:
         return merged
 
     def snapshot(self, session_id: str) -> dict[str, Any]:
+        request_started = time.perf_counter()
         bundle = self.get_bundle(session_id)
+        trace = WorkflowTrace("analysis", bundle, started_at=request_started)
+        trace.add_step(
+            "context_load",
+            "读取服务上下文",
+            engine="local",
+            reason="合并聊天、订单、工单和已记录事项",
+            latency_ms=elapsed_ms(request_started),
+            output_state="context_ready",
+            input_summary=f"会话 {session_id}",
+            output_summary=(
+                f"{len(bundle['messages'])} 条消息，"
+                f"{1 if bundle.get('order') else 0} 个订单，"
+                f"{len(bundle.get('tickets', []))} 个工单"
+            ),
+        )
+        cache_started = time.perf_counter()
         with database(self.settings.database_path) as connection:
             cached = connection.execute(
                 "SELECT * FROM analysis_cache WHERE session_id = ?", (session_id,)
             ).fetchone()
+        trace.add_step(
+            "cache_lookup",
+            "查询分析缓存",
+            engine="cache" if cached else "local",
+            reason="避免同一消息版本重复请求模型",
+            latency_ms=elapsed_ms(cache_started),
+            output_state="cache_ready" if cached else "cache_miss",
+            output_summary="命中已有分析" if cached else "未命中",
+        )
         if cached:
             result = json.loads(cached["result_json"])
+            refresh_started = time.perf_counter()
             current = deterministic_analysis(bundle)
             result = self._refresh_cached_live_state(result, current)
+            trace.add_step(
+                "live_state_refresh",
+                "刷新当前状态",
+                engine="local",
+                reason="缓存只复用深度分析，意图、情绪和解决进度仍按最新消息计算",
+                latency_ms=elapsed_ms(refresh_started),
+                output_state="analysis_ready",
+                output_summary=f"当前意图：{current['primary_intent']['value']}",
+            )
             result["run"] = {
                 "provider": cached["provider"],
                 "model": cached["model"],
@@ -1178,18 +1236,34 @@ class EmpathyService:
                 "cached": True,
                 "pending": False,
             }
-            result.setdefault(
-                "orchestration",
-                build_skill_trace(
-                    bundle,
-                    result,
-                    task="analysis",
-                    model_called=cached["provider"] == "qwen",
-                    cached=True,
+        else:
+            rules_started = time.perf_counter()
+            result = deterministic_analysis(bundle)
+            trace.add_step(
+                "rules_analysis",
+                "本地规则分析",
+                engine="local",
+                reason="先得到可解释、可立即展示的基础结果",
+                latency_ms=elapsed_ms(rules_started),
+                output_state="rules_ready",
+                output_summary=(
+                    f"意图：{result['primary_intent']['value']}，"
+                    f"风险：{result['risk_level']}"
                 ),
             )
-        else:
-            result = deterministic_analysis(bundle)
+            route_started = time.perf_counter()
+            model_pending = self.ai.configured and should_use_understanding_model(
+                bundle, result
+            )
+            trace.add_step(
+                "model_route",
+                "决定是否深入分析",
+                engine="local",
+                reason="仅在低置信、风险或真实图片场景请求模型",
+                latency_ms=elapsed_ms(route_started),
+                output_state="model_pending" if model_pending else "analysis_ready",
+                output_summary="等待按需模型结果" if model_pending else "本地结果已足够",
+            )
             result["run"] = {
                 "provider": "instant",
                 "model": None,
@@ -1197,15 +1271,12 @@ class EmpathyService:
                 "output_tokens": 0,
                 "latency_ms": 0,
                 "cached": False,
-                "pending": self.ai.configured
-                and should_use_understanding_model(bundle, result),
+                "pending": model_pending,
             }
-            result["orchestration"] = build_skill_trace(
-                bundle,
-                result,
-                task="analysis",
-                model_called=False,
-            )
+        result["orchestration"] = trace.finish(
+            result,
+            final_state="model_pending" if result["run"].get("pending") else None,
+        )
         return {"bundle": bundle, "analysis": result}
 
     def analyze(self, session_id: str, force: bool = False) -> dict[str, Any]:
@@ -1213,16 +1284,48 @@ class EmpathyService:
             return self._analyze_unlocked(session_id, force=force)
 
     def _analyze_unlocked(self, session_id: str, force: bool = False) -> dict[str, Any]:
+        request_started = time.perf_counter()
         bundle = self.get_bundle(session_id)
+        trace = WorkflowTrace("analysis", bundle, started_at=request_started)
+        trace.add_step(
+            "context_load",
+            "读取服务上下文",
+            engine="local",
+            reason="合并聊天、订单、工单和已记录事项",
+            latency_ms=elapsed_ms(request_started),
+            output_state="context_ready",
+            input_summary=f"会话 {session_id}",
+            output_summary=f"{len(bundle['messages'])} 条消息",
+        )
         if not force:
+            cache_started = time.perf_counter()
             with database(self.settings.database_path) as connection:
                 cached = connection.execute(
                     "SELECT * FROM analysis_cache WHERE session_id = ?", (session_id,)
                 ).fetchone()
+            trace.add_step(
+                "cache_lookup",
+                "查询分析缓存",
+                engine="cache" if cached else "local",
+                reason="避免同一消息版本重复请求模型",
+                latency_ms=elapsed_ms(cache_started),
+                output_state="cache_ready" if cached else "cache_miss",
+                output_summary="命中已有分析" if cached else "未命中",
+            )
             if cached:
                 result = json.loads(cached["result_json"])
+                refresh_started = time.perf_counter()
                 current = deterministic_analysis(bundle)
                 result = self._refresh_cached_live_state(result, current)
+                trace.add_step(
+                    "live_state_refresh",
+                    "刷新当前状态",
+                    engine="local",
+                    reason="使用最新消息修正可变的服务状态",
+                    latency_ms=elapsed_ms(refresh_started),
+                    output_state="analysis_ready",
+                    output_summary=f"当前意图：{current['primary_intent']['value']}",
+                )
                 result["run"] = {
                     "provider": cached["provider"],
                     "model": cached["model"],
@@ -1231,19 +1334,23 @@ class EmpathyService:
                     "latency_ms": cached["latency_ms"],
                     "cached": True,
                 }
-                result.setdefault(
-                    "orchestration",
-                    build_skill_trace(
-                        bundle,
-                        result,
-                        task="analysis",
-                        model_called=cached["provider"] == "qwen",
-                        cached=True,
-                    ),
-                )
+                result["orchestration"] = trace.finish(result)
                 return {"bundle": bundle, "analysis": result}
 
+        rules_started = time.perf_counter()
         deterministic = deterministic_analysis(bundle)
+        trace.add_step(
+            "rules_analysis",
+            "本地规则分析",
+            engine="local",
+            reason="生成可解释的意图候选、情绪、风险和服务状态",
+            latency_ms=elapsed_ms(rules_started),
+            output_state="rules_ready",
+            output_summary=(
+                f"意图：{deterministic['primary_intent']['value']}，"
+                f"风险：{deterministic['risk_level']}"
+            ),
+        )
         metadata = {
             "provider": "local",
             "model": None,
@@ -1252,13 +1359,37 @@ class EmpathyService:
             "latency_ms": 0,
         }
         result = deterministic
+        route_started = time.perf_counter()
         use_model = self.ai.configured and should_use_understanding_model(
             bundle, deterministic
         )
+        trace.add_step(
+            "model_route",
+            "决定是否深入分析",
+            engine="local",
+            reason="低置信、风险或图片场景才请求模型",
+            latency_ms=elapsed_ms(route_started),
+            output_state="model_routed" if use_model else "analysis_ready",
+            output_summary="执行按需模型节点" if use_model else "本地结果已足够",
+        )
         if use_model:
             try:
+                context_started = time.perf_counter()
                 multimodal_inputs = self._multimodal_inputs(bundle)
                 model_context = self._model_context(bundle)
+                trace.add_step(
+                    "model_context",
+                    "压缩模型上下文",
+                    engine="local",
+                    reason="只保留首条问题、近期对话和结构化业务信息",
+                    latency_ms=elapsed_ms(context_started),
+                    output_state="model_context_ready",
+                    input_summary=f"原始 {len(bundle['messages'])} 条消息",
+                    output_summary=(
+                        f"模型输入 {model_context['context_policy']['included_messages']} 条消息，"
+                        f"{len(multimodal_inputs)} 张图片"
+                    ),
+                )
                 visual_result: dict[str, Any] = {"visual_observations": []}
                 visual_metadata: dict[str, Any] | None = None
                 model_result: dict[str, Any] = {}
@@ -1310,6 +1441,39 @@ class EmpathyService:
                 elif run_text:
                     model_result, text_metadata = analyze_text()
 
+                if text_metadata:
+                    trace.add_step(
+                        "intent_review" if needs_intent_review else "context_analysis",
+                        "歧义意图复核" if needs_intent_review else "复杂会话分析",
+                        engine="qwen-text",
+                        reason=(
+                            "本地候选接近或超出已知范围"
+                            if needs_intent_review
+                            else "对存在风险的多源上下文做深入判断"
+                        ),
+                        latency_ms=text_metadata.get("latency_ms") or 0,
+                        output_state="text_analysis_ready",
+                        input_summary=(
+                            "最新两条用户消息 + Top 3 候选"
+                            if needs_intent_review
+                            else f"{model_context['context_policy']['included_messages']} 条消息 + 业务记录"
+                        ),
+                        output_summary=(model_result.get("primary_intent") or {}).get("value", "已完成"),
+                        metadata=text_metadata,
+                    )
+                if visual_metadata:
+                    trace.add_step(
+                        "image_inspection",
+                        "图片事实核对",
+                        engine="qwen-omni",
+                        reason="会话中存在可读取的真实图片",
+                        latency_ms=visual_metadata.get("latency_ms") or 0,
+                        output_state="visual_analysis_ready",
+                        input_summary=f"{len(multimodal_inputs)} 张图片",
+                        output_summary=f"{len(visual_result.get('visual_observations', []))} 条可见事实",
+                        metadata=visual_metadata,
+                    )
+
                 model_result["visual_observations"] = visual_result.get(
                     "visual_observations", []
                 )
@@ -1338,7 +1502,17 @@ class EmpathyService:
                     }
                 elif visual_metadata:
                     metadata = {**visual_metadata, "multimodal": True}
+                merge_started = time.perf_counter()
                 result = self._sanitize_model_analysis(bundle, deterministic, model_result)
+                trace.add_step(
+                    "evidence_guard",
+                    "证据与边界校验",
+                    engine="local",
+                    reason="剔除无效证据，保留确定性冲突和安全边界",
+                    latency_ms=elapsed_ms(merge_started),
+                    output_state="analysis_ready",
+                    output_summary=f"{len(result.get('risk_signals', []))} 条风险信号",
+                )
             except Exception as error:
                 metadata = {
                     **metadata,
@@ -1346,14 +1520,30 @@ class EmpathyService:
                     "error": type(error).__name__,
                     "error_detail": str(error),
                 }
+                trace.add_step(
+                    "model_failure",
+                    "模型节点失败",
+                    engine="qwen",
+                    reason="请求失败后保留本地规则结果",
+                    latency_ms=0,
+                    output_state="analysis_ready",
+                    output_summary=type(error).__name__,
+                    status="failed",
+                )
 
         result["run"] = {**metadata, "cached": False}
-        result["orchestration"] = build_skill_trace(
-            bundle,
-            result,
-            task="analysis",
-            model_called=metadata["provider"] == "qwen",
+        risk_started = time.perf_counter()
+        self._upsert_risks(bundle, result["risk_signals"])
+        trace.add_step(
+            "risk_sync",
+            "同步风险事件",
+            engine="local",
+            reason="将当前风险与处理状态写入跟进台",
+            latency_ms=elapsed_ms(risk_started),
+            output_state="risk_synced",
+            output_summary=f"{len(result['risk_signals'])} 条当前风险",
         )
+        result["orchestration"] = trace.finish(result)
         with database(self.settings.database_path) as connection:
             connection.execute(
                 """
@@ -1373,15 +1563,26 @@ class EmpathyService:
                     datetime.now().isoformat(timespec="seconds"),
                 ),
             )
-        self._upsert_risks(bundle, result["risk_signals"])
         return {"bundle": bundle, "analysis": result}
 
     def draft(
         self, session_id: str, tone: str = "自然", prefer_fast: bool = False
     ) -> dict[str, Any]:
+        request_started = time.perf_counter()
         analyzed = self.analyze(session_id)
         bundle = analyzed["bundle"]
         analysis = analyzed["analysis"]
+        trace = WorkflowTrace("draft", bundle, started_at=request_started)
+        trace.add_step(
+            "analysis_context",
+            "取得会话分析",
+            engine="cache" if analysis.get("run", {}).get("cached") else "local",
+            reason="草稿基于当前意图、风险和服务状态生成",
+            latency_ms=elapsed_ms(request_started),
+            output_state="analysis_ready",
+            input_summary=f"会话 {session_id}",
+            output_summary=f"意图：{analysis['primary_intent']['value']}",
+        )
         query = " ".join(
             [bundle["conversation"].get("scene_major") or "", bundle["conversation"].get("scene_minor") or ""]
             + [message["text"] for message in bundle["messages"][-6:]]
@@ -1395,6 +1596,8 @@ class EmpathyService:
                 for observation in analysis.get("visual_observations", [])
             ]
         )
+        retrieval_started = time.perf_counter()
+        retrieve_knowledge = should_retrieve_knowledge(bundle)
         knowledge = (
             search_knowledge(
                 self.settings.database_path,
@@ -1403,16 +1606,48 @@ class EmpathyService:
                 scene=bundle["conversation"].get("scene_major"),
                 limit=4,
             )
-            if should_retrieve_knowledge(bundle)
+            if retrieve_knowledge
             else []
         )
+        if retrieve_knowledge:
+            trace.add_step(
+                "knowledge_retrieval",
+                "知识检索",
+                engine="local",
+                reason="复杂业务回复需要可追溯的处理依据",
+                latency_ms=elapsed_ms(retrieval_started),
+                output_state="knowledge_ready",
+                input_summary=f"场景：{bundle['conversation'].get('scene_major') or '未分类'}",
+                output_summary=f"召回 {len(knowledge)} 条知识",
+            )
+        fallback_started = time.perf_counter()
         fallback = fallback_reply(bundle, analysis, tone)
+        trace.add_step(
+            "fallback_draft",
+            "生成保障草稿",
+            engine="local",
+            reason="先产生不依赖外部模型的可用回复",
+            latency_ms=elapsed_ms(fallback_started),
+            output_state="fallback_ready",
+            output_summary=f"{len(fallback['reply_draft'])} 个字符",
+        )
         guarded_state = bool(
             analysis.get("primary_intent", {}).get("requires_clarification")
             or analysis.get("resolution_state", {}).get("stage") == "已解决"
         )
+        route_started = time.perf_counter()
+        use_model = self.ai.configured and not prefer_fast and not guarded_state
+        trace.add_step(
+            "draft_route",
+            "选择草稿路径",
+            engine="local",
+            reason="已解决、需澄清或快速回复场景优先使用确定性草稿",
+            latency_ms=elapsed_ms(route_started),
+            output_state="model_routed" if use_model else "draft_ready",
+            output_summary="请求文本模型" if use_model else "使用保障草稿",
+        )
         if not self.ai.configured or prefer_fast or guarded_state:
-            return {
+            response = {
                 **fallback,
                 "provider": (
                     "rules-guarded"
@@ -1422,43 +1657,71 @@ class EmpathyService:
                     else fallback.get("provider", "rules")
                 ),
                 "knowledge": knowledge,
-                "orchestration": build_skill_trace(
-                    bundle,
-                    analysis,
-                    task="draft",
-                    model_called=False,
-                    retrieval_count=len(knowledge),
-                ),
             }
+            response["orchestration"] = trace.finish(analysis)
+            return response
         try:
+            context_started = time.perf_counter()
+            model_context = self._model_context(bundle)
+            trace.add_step(
+                "model_context",
+                "压缩模型上下文",
+                engine="local",
+                reason="仅传入回复所需的对话和业务证据",
+                latency_ms=elapsed_ms(context_started),
+                output_state="model_context_ready",
+                output_summary=f"{model_context['context_policy']['included_messages']} 条消息",
+            )
             model_result, metadata = self.ai.draft(
-                self._model_context(bundle), analysis, knowledge, tone
+                model_context, analysis, knowledge, tone
             )
             reply_draft = model_result.get("reply_draft") or fallback["reply_draft"]
+            trace.add_step(
+                "model_draft",
+                "生成个性化草稿",
+                engine="qwen-text",
+                reason="结合对话、业务记录和召回知识生成回复",
+                latency_ms=metadata.get("latency_ms") or 0,
+                output_state="model_draft_ready",
+                input_summary=f"{len(knowledge)} 条知识，语气：{tone}",
+                output_summary=f"{len(reply_draft)} 个字符",
+                metadata=metadata,
+            )
+            guard_started = time.perf_counter()
             preflight = deterministic_quality_check(bundle, analysis, reply_draft)
+            trace.add_step(
+                "draft_guard",
+                "发送前确定性检查",
+                engine="local",
+                reason="检查错误实体、重复追问、医疗表述和无依据承诺",
+                latency_ms=elapsed_ms(guard_started),
+                output_state="draft_ready" if preflight["passed"] else "guarded_response",
+                output_summary=(
+                    "检查通过"
+                    if preflight["passed"]
+                    else f"拦截 {len(preflight['issues'])} 个问题，回退保障草稿"
+                ),
+            )
             if not preflight["passed"]:
-                return {
+                response = {
                     **fallback,
                     "provider": "qwen-guarded",
                     "model": metadata["model"],
                     "latency_ms": metadata["latency_ms"],
                     "guard_issues": preflight["issues"],
                     "knowledge": knowledge,
-                    "orchestration": build_skill_trace(
-                        bundle,
-                        analysis,
-                        task="draft",
-                        model_called=True,
-                        retrieval_count=len(knowledge),
-                    ),
                 }
+                response["orchestration"] = trace.finish(
+                    analysis, final_state="guarded_response"
+                )
+                return response
             valid_ids = self._valid_evidence_ids(bundle)
             used_evidence = [
                 str(item)
                 for item in model_result.get("used_evidence", [])
                 if not isinstance(item, (dict, list)) and str(item) in valid_ids
             ]
-            return {
+            response = {
                 "reply_draft": reply_draft,
                 "tags": model_result.get("tags") or fallback["tags"],
                 "used_evidence": used_evidence or fallback["used_evidence"],
@@ -1469,44 +1732,67 @@ class EmpathyService:
                 "input_tokens": metadata.get("input_tokens"),
                 "output_tokens": metadata.get("output_tokens"),
                 "knowledge": knowledge,
-                "orchestration": build_skill_trace(
-                    bundle,
-                    analysis,
-                    task="draft",
-                    model_called=True,
-                    retrieval_count=len(knowledge),
-                ),
             }
+            response["orchestration"] = trace.finish(analysis)
+            return response
         except Exception as error:
-            return {
+            trace.add_step(
+                "model_failure",
+                "模型草稿失败",
+                engine="qwen-text",
+                reason="模型请求异常后自动使用保障草稿",
+                latency_ms=0,
+                output_state="fallback_ready",
+                output_summary=type(error).__name__,
+                status="failed",
+            )
+            response = {
                 **fallback,
                 "provider": "local-fallback",
                 "fallback_reason": type(error).__name__,
                 "knowledge": knowledge,
-                "orchestration": build_skill_trace(
-                    bundle,
-                    analysis,
-                    task="draft",
-                    model_called=False,
-                    retrieval_count=len(knowledge),
-                ),
             }
+            response["orchestration"] = trace.finish(analysis)
+            return response
 
     def quality_check(self, session_id: str, text: str) -> dict[str, Any]:
+        request_started = time.perf_counter()
         analyzed = self.snapshot(session_id)
         bundle = analyzed["bundle"]
         analysis = analyzed["analysis"]
+        trace = WorkflowTrace("quality", bundle, started_at=request_started)
+        trace.add_step(
+            "analysis_context",
+            "取得会话分析",
+            engine="cache" if analysis.get("run", {}).get("cached") else "local",
+            reason="发送检查需要当前业务事实和风险状态",
+            latency_ms=elapsed_ms(request_started),
+            output_state="analysis_ready",
+            output_summary=f"当前风险：{analysis['risk_level']}",
+        )
+        rules_started = time.perf_counter()
         rule_result = deterministic_quality_check(bundle, analysis, text)
+        trace.add_step(
+            "quality_rules",
+            "确定性发送检查",
+            engine="local",
+            reason="优先拦截已知的错误实体、重复追问和高风险承诺",
+            latency_ms=elapsed_ms(rules_started),
+            output_state="rules_passed" if rule_result["passed"] else "blocked",
+            input_summary=f"{len(text)} 个字符",
+            output_summary=(
+                "检查通过"
+                if rule_result["passed"]
+                else f"拦截 {len(rule_result['issues'])} 个问题"
+            ),
+        )
         if not self.ai.configured or not rule_result["passed"]:
-            return {
-                **rule_result,
-                "orchestration": build_skill_trace(
-                    bundle,
-                    analysis,
-                    task="quality",
-                    model_called=False,
-                ),
-            }
+            response = {**rule_result}
+            response["orchestration"] = trace.finish(
+                analysis, final_state="blocked" if not rule_result["passed"] else None
+            )
+            return response
+        route_started = time.perf_counter()
         needs_deep_check = len(text) > 120 or any(
             term in text
             for term in (
@@ -1522,21 +1808,52 @@ class EmpathyService:
                 "恢复",
             )
         )
+        trace.add_step(
+            "quality_route",
+            "决定是否深度质检",
+            engine="local",
+            reason="长回复或涉及退款、补发、赔偿、医疗时启用模型复核",
+            latency_ms=elapsed_ms(route_started),
+            output_state="model_routed" if needs_deep_check else "quality_passed",
+            output_summary="执行模型复核" if needs_deep_check else "本地检查已足够",
+        )
         if not needs_deep_check:
-            return {
+            response = {
                 **rule_result,
                 "provider": "rules-fastpath",
-                "orchestration": build_skill_trace(
-                    bundle,
-                    analysis,
-                    task="quality",
-                    model_called=False,
-                ),
             }
+            response["orchestration"] = trace.finish(analysis)
+            return response
         try:
-            model_result, metadata = self.ai.quality_check(
-                self._model_context(bundle), analysis, text, rule_result
+            context_started = time.perf_counter()
+            model_context = self._model_context(bundle)
+            trace.add_step(
+                "model_context",
+                "压缩质检上下文",
+                engine="local",
+                reason="只传入判断当前回复所需的证据",
+                latency_ms=elapsed_ms(context_started),
+                output_state="model_context_ready",
+                output_summary=f"{model_context['context_policy']['included_messages']} 条消息",
             )
+            model_result, metadata = self.ai.quality_check(
+                model_context, analysis, text, rule_result
+            )
+            trace.add_step(
+                "model_quality_review",
+                "模型语义质检",
+                engine="qwen-text",
+                reason="检查规则难以覆盖的语义风险",
+                latency_ms=metadata.get("latency_ms") or 0,
+                output_state="model_review_ready",
+                output_summary=(
+                    "复核通过"
+                    if model_result.get("passed") is not False
+                    else "复核拦截"
+                ),
+                metadata=metadata,
+            )
+            merge_started = time.perf_counter()
             combined = {issue["code"]: issue for issue in rule_result["issues"]}
             for issue in model_result.get("issues", []):
                 if isinstance(issue, dict) and issue.get("code"):
@@ -1547,7 +1864,16 @@ class EmpathyService:
                     combined.setdefault(advisory["code"], advisory)
             issues = list(combined.values())
             model_passed = model_result.get("passed") is not False
-            return {
+            trace.add_step(
+                "quality_merge",
+                "合并质检结果",
+                engine="local",
+                reason="任一高风险规则或模型判定均可拦截发送",
+                latency_ms=elapsed_ms(merge_started),
+                output_state="quality_passed" if model_passed else "blocked",
+                output_summary=f"{len(issues)} 个问题",
+            )
+            response = {
                 "passed": rule_result["passed"] and model_passed,
                 "issues": issues,
                 "checks": {
@@ -1556,25 +1882,29 @@ class EmpathyService:
                 },
                 "suggested_rewrite": model_result.get("suggested_rewrite", ""),
                 **metadata,
-                "orchestration": build_skill_trace(
-                    bundle,
-                    analysis,
-                    task="quality",
-                    model_called=True,
-                ),
             }
+            response["orchestration"] = trace.finish(
+                analysis, final_state="blocked" if not response["passed"] else None
+            )
+            return response
         except Exception as error:
-            return {
+            trace.add_step(
+                "model_failure",
+                "模型质检失败",
+                engine="qwen-text",
+                reason="请求失败后保留确定性检查结果",
+                latency_ms=0,
+                output_state="rules_passed",
+                output_summary=type(error).__name__,
+                status="failed",
+            )
+            response = {
                 **rule_result,
                 "provider": "rules-fallback",
                 "fallback_reason": type(error).__name__,
-                "orchestration": build_skill_trace(
-                    bundle,
-                    analysis,
-                    task="quality",
-                    model_called=False,
-                ),
             }
+            response["orchestration"] = trace.finish(analysis)
+            return response
 
     def send(self, session_id: str, text: str, actor: str) -> dict[str, Any]:
         quality = self.quality_check(session_id, text)
